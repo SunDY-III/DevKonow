@@ -28,7 +28,7 @@ public class DocumentController {
 
     @GetMapping("/{id}/progress")
     public ApiResponse<Map<String, Object>> progress(@PathVariable Long id) {
-        return ApiResponse.ok(documentService.progress(id));
+        return ApiResponse.ok(documentService.progress(UserContext.require(), id));
     }
 
     @DeleteMapping("/{id}")

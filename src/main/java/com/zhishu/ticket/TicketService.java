@@ -57,9 +57,19 @@ public class TicketService {
         return ticketRepository.save(t);   // 并发冲突由 @Version 乐观锁兜住
     }
 
+    /**
+     * 人工状态流转。
+     * 归属校验（修复越权）：工单号可枚举，必须校验操作者身份 ——
+     * 仅「工单创建人」或「当前处理人」可流转，否则任意登录用户都能改他人工单状态。
+     */
     @Transactional
-    public Ticket transit(String ticketNo, TicketStatus target) {
+    public Ticket transit(Long actorId, String ticketNo, TicketStatus target) {
         Ticket t = mustGet(ticketNo);
+        boolean isOwner = actorId.equals(t.getUserId());
+        boolean isAssignee = t.getAssigneeId() != null && actorId.equals(t.getAssigneeId());
+        if (!isOwner && !isAssignee) {
+            throw new BizException(403, "无权操作该工单");
+        }
         t.getStatus().assertCanTransitTo(target);
         if (target == TicketStatus.RESOLVED || target == TicketStatus.CLOSED) {
             assignService.release(t.getAssigneeId());

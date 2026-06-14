@@ -80,14 +80,25 @@ mysql -h127.0.0.1 -uroot -proot zhishu < sql/schema.sql
 
 ### 2. 配置模型 API Key
 
-支持任意 OpenAI 协议兼容服务（DeepSeek、硅基流动等，成本几十元内可完成全部开发测试）：
+支持任意 OpenAI 协议兼容服务（DeepSeek、硅基流动等，成本几十元内可完成全部开发测试）。
+`application.yml` 中 `api-key` **默认留空**，按接入方式二选一：
+
+- **直连官方**（DeepSeek 等需要鉴权）：用环境变量注入真实 key：
 
 ```bash
 export LLM_API_KEY=sk-xxx          # 对话模型
 export EMBEDDING_API_KEY=sk-xxx    # Embedding 模型（可与上面相同）
 ```
 
-模型名、base-url 在 `application.yml` 的 `llm:` 段调整。
+- **第三方中转 / 本地网关**（one-api、Ollama 的 OpenAI 兼容端口等，多数不校验 key）：
+  key 留空即可，仅改 `base-url` 指向中转地址：
+
+```bash
+export LLM_BASE_URL=http://your-gateway/v1   # 第三方接入 DeepSeek 的中转地址
+# LLM_API_KEY 不设置，留空
+```
+
+模型名、base-url 均可在 `application.yml` 的 `llm:` 段或对应环境变量调整。
 
 ### 3. 运行
 

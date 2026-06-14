@@ -41,14 +41,18 @@ minio:
   bucket: zhishu-docs
 
 llm:
-  # 以 DeepSeek 为例；任何兼容 OpenAI 协议的模型都可以直接替换 base-url / model
-  base-url: https://api.deepseek.com/v1
-  api-key: ${LLM_API_KEY:sk-replace-me}
-  chat-model: deepseek-chat
-  # Embedding 单独配置（DeepSeek 暂无 embedding，可用通义/智谱/硅基流动的兼容接口）
+  # 以 DeepSeek 为例；任何兼容 OpenAI 协议的模型都可以直接替换 base-url / model。
+  # api-key 默认留空：
+  #   · 直连 DeepSeek 官方：export LLM_API_KEY=sk-xxx 注入真实 key
+  #   · 第三方中转 / 本地 one-api / Ollama 等不校验 key 的网关：留空即可，无需任何 key
+  base-url: ${LLM_BASE_URL:https://api.deepseek.com/v1}
+  api-key: ${LLM_API_KEY:}
+  chat-model: ${LLM_CHAT_MODEL:deepseek-chat}
+  # Embedding 单独配置（DeepSeek 暂无 embedding，可用通义/智谱/硅基流动的兼容接口）。
+  # 同样默认留空，按需用 EMBEDDING_API_KEY 注入。
   embedding-base-url: ${EMBEDDING_BASE_URL:https://api.siliconflow.cn/v1}
-  embedding-api-key: ${EMBEDDING_API_KEY:sk-replace-me}
-  embedding-model: BAAI/bge-m3
+  embedding-api-key: ${EMBEDDING_API_KEY:}
+  embedding-model: ${EMBEDDING_MODEL:BAAI/bge-m3}
   max-concurrency: 8          # LLM 调用层信号量并发上限，防止打爆 API 配额
 
 app:

@@ -83,8 +83,10 @@ public class DocumentService {
         return docRepository.findByUserIdAndDeletedOrderByIdDesc(userId, 0);
     }
 
-    public Map<String, Object> progress(Long docId) {
+    public Map<String, Object> progress(Long userId, Long docId) {
         KnowledgeDocument doc = docRepository.findById(docId).orElseThrow(() -> new BizException("文档不存在"));
+        // 归属校验（修复越权）：docId 可枚举，防止查看他人文档解析状态
+        if (!doc.getUserId().equals(userId)) throw new BizException(403, "无权查看该文档");
         String p = redis.opsForValue().get(PROGRESS_KEY + docId);
         return Map.of("status", doc.getStatus(), "progress", p == null ? "100" : p);
     }

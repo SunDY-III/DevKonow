@@ -22,6 +22,6 @@ public class TicketController {
 
     @PostMapping("/{ticketNo}/transit")
     public ApiResponse<Ticket> transit(@PathVariable String ticketNo, @RequestParam TicketStatus target) {
-        return ApiResponse.ok(ticketService.transit(ticketNo, target));
+        return ApiResponse.ok(ticketService.transit(UserContext.require(), ticketNo, target));
     }
 }
