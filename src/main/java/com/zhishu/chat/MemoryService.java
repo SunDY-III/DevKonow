@@ -46,9 +46,15 @@ public class MemoryService {
         memoryStore.updateMessages(memoryId, messages);
     }
 
-    /** 把窗口外的早期消息压成摘要，保留最近 windowSize*2 条原文 */
+    /** 把窗口外的早期消息压成摘要，保留最近 keep 条原文。
+     *  keep 取 {windowSize*2} 与 {summaryTrigger 安全上限} 的较小值，
+     *  确保压缩后的消息总数（1 条摘要 + keep 条原文）严格小于 summaryTrigger，
+     *  避免每次请求都触发重复压缩。 */
     private List<ChatMessage> compress(String memoryId, Long userId, List<ChatMessage> messages) {
-        int keep = windowSize * 2;
+        // 保证压缩后不会立即再触发：1 + keep < summaryTrigger
+        int safeMax = ((summaryTrigger - 3) / 2) * 2;   // 最大偶数，满足 1 + safeMax < summaryTrigger
+        int keep = Math.min(windowSize * 2, safeMax);
+        keep = Math.max(keep, 2);  // 至少保留一轮对话
         List<ChatMessage> old = messages.subList(0, messages.size() - keep);
         List<ChatMessage> recent = new ArrayList<>(messages.subList(messages.size() - keep, messages.size()));
 

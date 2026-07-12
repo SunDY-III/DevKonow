@@ -41,18 +41,38 @@ minio:
   bucket: zhishu-docs
 
 llm:
-  # 以 DeepSeek 为例；任何兼容 OpenAI 协议的模型都可以直接替换 base-url / model。
-  # api-key 默认留空：
-  #   · 直连 DeepSeek 官方：export LLM_API_KEY=sk-xxx 注入真实 key
-  #   · 第三方中转 / 本地 one-api / Ollama 等不校验 key 的网关：留空即可，无需任何 key
-  base-url: ${LLM_BASE_URL:https://api.deepseek.com/v1}
+  # 默认对接「第三方 GPT 中转」（OpenAI 协议兼容）。换任意兼容服务只改 base-url / model / key。
+  #   · 第三方 GPT 中转 / OpenAI 官方：必须配置真实 key（export LLM_API_KEY=sk-xxx）
+  #   · 本地 one-api / Ollama 等不校验 key 的网关：key 可留空
+  #
+  # base-url 填中转站给出的 OpenAI 兼容地址，务必带 /v1 后缀，例如：
+  #   export LLM_BASE_URL=https://your-gpt-proxy.com/v1
+  base-url: ${LLM_BASE_URL:https://api.openai.com/v1}
   api-key: ${LLM_API_KEY:}
-  chat-model: ${LLM_CHAT_MODEL:deepseek-chat}
-  # Embedding 单独配置（DeepSeek 暂无 embedding，可用通义/智谱/硅基流动的兼容接口）。
-  # 同样默认留空，按需用 EMBEDDING_API_KEY 注入。
-  embedding-base-url: ${EMBEDDING_BASE_URL:https://api.siliconflow.cn/v1}
-  embedding-api-key: ${EMBEDDING_API_KEY:}
-  embedding-model: ${EMBEDDING_MODEL:BAAI/bge-m3}
+  # GPT 对话模型：gpt-4o-mini（性价比）/ gpt-4o / gpt-3.5-turbo 等
+  chat-model: ${LLM_CHAT_MODEL:gpt-4o-mini}
+
+  # Embedding 可与对话用同一中转；GPT 系列用 text-embedding-3-small / -large。
+  # 默认复用对话的 base-url / key（同一中转站），需要时再单独覆盖。
+  embedding-base-url: ${EMBEDDING_BASE_URL:${LLM_BASE_URL:https://api.openai.com/v1}}
+  embedding-api-key: ${EMBEDDING_API_KEY:${LLM_API_KEY:}}
+  embedding-model: ${EMBEDDING_MODEL:text-embedding-3-small}
+  # text-embedding-3-* 支持自定义维度；留 0 用模型默认（small=1536）。
+  # 注意：换 embedding 模型/维度后，旧向量需重新入库（维度不同无法比对）。
+  embedding-dimensions: ${EMBEDDING_DIMENSIONS:0}
+
+  # 以下为第三方中转常用可选项，不需要就保持默认 —————————————————————
+  organization-id: ${LLM_ORG_ID:}            # OpenAI organization（个别中转/官方多组织需要）
+  custom-headers: ${LLM_CUSTOM_HEADERS:}     # 额外请求头，格式 K1:V1;K2:V2（个别中转需渠道头）
+  max-retries: ${LLM_MAX_RETRIES:2}          # 单次调用失败自动重试次数（应对中转偶发抖动）
+  log-requests: ${LLM_LOG_REQUESTS:false}    # 调试：打印请求体到日志（排查中转连通性）
+  log-responses: ${LLM_LOG_RESPONSES:false}  # 调试：打印响应体到日志
+  chat-temperature: ${LLM_CHAT_TEMPERATURE:0.2}
+  stream-temperature: ${LLM_STREAM_TEMPERATURE:0.3}
+  chat-timeout-seconds: ${LLM_CHAT_TIMEOUT:60}
+  stream-timeout-seconds: ${LLM_STREAM_TIMEOUT:120}
+  embedding-timeout-seconds: ${LLM_EMBEDDING_TIMEOUT:30}
+
   max-concurrency: 8          # LLM 调用层信号量并发上限，防止打爆 API 配额
 
 app:
@@ -72,7 +92,7 @@ app:
     ttl-hours: 24
   memory:
     window-size: 10           # 保留最近 N 轮
-    summary-trigger: 20       # 消息数超过该值触发历史摘要压缩
+    summary-trigger: 30       # 消息数超过该值触发历史摘要压缩（须大于 window-size*2 + 2，防止压缩后立即再触发）
   rate-limit:
     user-capacity: 20         # 用户级：每窗口最大请求数
     api-capacity: 200         # 接口级
