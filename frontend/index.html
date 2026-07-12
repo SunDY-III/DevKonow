@@ -618,7 +618,10 @@ async function ask() {
         let event = 'message', data = '';
         for (const line of frame.split('\n')) {
           if (line.startsWith('event:')) event = line.slice(6).trim();
-          if (line.startsWith('data:')) data += line.slice(5);
+          if (line.startsWith('data:')) {
+            const val = line.slice(5);
+            data = data ? data + '\n' + val : val;   // 多行 data 保留换行
+          }
         }
         if (event === 'token') { started = true; body += data; render(true); }
         else if (event === 'cached') { badge = '<span class="badge cache">来自历史相似问题 · 语义缓存</span><br>'; render(true); }
