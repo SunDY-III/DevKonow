@@ -23,8 +23,8 @@ public class ChatController {
 
     @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(@RequestParam String conversationId, @RequestParam String question) {
-        // 超时 3 分钟：到点触发 onTimeout 回调统一释放，防连接泄漏
-        SseEmitter emitter = new SseEmitter(180_000L);
+        // 超时 150 秒：须大于 LLM stream 超时（120s）+ 网络缓冲，避免 LLM 断连后 SSE 空挂
+        SseEmitter emitter = new SseEmitter(150_000L);
         Long userId = UserContext.require();   // ThreadLocal 在异步线程不可见，这里先取值再传递
         chatService.streamChat(userId, userId + ":" + conversationId, question, emitter);
         return emitter;

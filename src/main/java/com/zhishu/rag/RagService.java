@@ -41,7 +41,6 @@ public class RagService {
         // 通道 1：向量相似度召回（语义近似强，专名/编号弱）
         float[] queryVector = embed(userId, question);
         List<ScoredChunk> vectorHits = vectorStoreService.search(queryVector, vectorTopK);
-        double confidence = vectorHits.isEmpty() ? 0 : vectorHits.get(0).getScore();
 
         // 通道 2：关键词全文召回（专名/编号强，同义改写弱）
         List<ScoredChunk> keywordHits = chunkRepository.keywordSearch(question, keywordTopK).stream()
@@ -52,8 +51,19 @@ public class RagService {
         List<ScoredChunk> fused = RrfFusion.fuse(vectorHits, keywordHits, rrfK);
         List<ScoredChunk> topN = reranker.rerank(question, fused, rerankTopN);
 
+        // 置信度：优先用向量余弦分（量纲 0~1 稳定），向量为空但关键词有命中时给保底值，
+        // 避免冷启动或查询偏专名时 false-negative 路由到工单
+        double confidence;
+        if (!vectorHits.isEmpty()) {
+            confidence = vectorHits.get(0).getScore();
+        } else if (!keywordHits.isEmpty()) {
+            confidence = 0.5;
+        } else {
+            confidence = 0;
+        }
+
         log.info("rag retrieve: q={}, vec={}, kw={}, fused={}, confidence={}",
-                question, vectorHits.size(), keywordHits.size(), fused.size(), confidence);
+                question, vectorHits.size(), keywordHits.size(), fused.size(), String.format("%.3f", confidence));
         return new RagResult(topN, confidence);
     }
 
