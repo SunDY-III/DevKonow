@@ -51,19 +51,26 @@ public class SemanticCacheService {
     public Optional<CacheEntry> lookup(float[] queryVector) {
         CacheEntry best = null;
         double bestScore = 0;
-        try (Cursor<String> cursor = redis.scan(ScanOptions.scanOptions().match(KEY_PREFIX + "*").count(200).build())) {
-            while (cursor.hasNext()) {
+        int scanned = 0;
+        int maxScan = 500;  // 性能上限：最多扫描 500 条，防止缓存膨胀后每次请求全量遍历
+        try (Cursor<String> cursor = redis.scan(ScanOptions.scanOptions().match(KEY_PREFIX + "*").count(100).build())) {
+            while (cursor.hasNext() && scanned < maxScan) {
                 String json = redis.opsForValue().get(cursor.next());
+                scanned++;
                 if (json == null) continue;
                 try {
                     CacheEntry e = objectMapper.readValue(json, CacheEntry.class);
                     double score = VectorStoreService.cosine(queryVector, e.getVector());
                     if (score > bestScore) { bestScore = score; best = e; }
+                    if (score > 0.99) break;  // 极高相似度提前终止
                 } catch (Exception ignore) { }
             }
         }
+        if (scanned >= maxScan) {
+            log.warn("semantic cache scan reached limit {}, consider adding index", maxScan);
+        }
         if (best != null && bestScore >= threshold) {
-            log.info("semantic cache HIT, score={}, q={}", bestScore, best.getQuestion());
+            log.info("semantic cache HIT, score={}, q={}", String.format("%.4f", bestScore), best.getQuestion());
             return Optional.of(best);
         }
         return Optional.empty();

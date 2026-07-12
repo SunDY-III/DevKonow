@@ -60,6 +60,13 @@ public class DocumentParseListener {
             log.error("doc parse failed, docId={}", docId, e);
             doc.setStatus("FAILED");
             docRepository.save(doc);
+            // 清理已落库的孤儿 chunk 和向量（parse 中途失败时前序 chunk 已持久化）
+            try {
+                chunkRepository.deleteByDocId(docId);
+                vectorStoreService.deleteByDoc(docId);
+            } catch (Exception cleanupErr) {
+                log.warn("cleanup partial chunks failed for docId={}", docId, cleanupErr);
+            }
             channel.basicNack(tag, false, false);   // 不重回队列
         }
     }
