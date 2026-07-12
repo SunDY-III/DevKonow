@@ -10,7 +10,7 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.UUID;
 
 @Slf4j
 @Service
@@ -26,7 +26,7 @@ public class TicketService {
     public Ticket create(Long userId, String title, String description) {
         Ticket t = new Ticket();
         t.setTicketNo("TK" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE)
-                + String.format("%04d", ThreadLocalRandom.current().nextInt(10000)));
+                + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase());
         t.setUserId(userId);
         t.setTitle(title);
         t.setDescription(description);

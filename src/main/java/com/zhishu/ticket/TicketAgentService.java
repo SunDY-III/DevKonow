@@ -62,8 +62,12 @@ public class TicketAgentService {
         long start = System.currentTimeMillis();
         try {
             String reply = assistant.handle("agent:" + conversationId, question);
-            // Agent 多轮工具调用的 Token 用量难以逐次回调，这里按字数估算入账（标注 AGENT 场景）
-            tokenAuditService.record(userId, "AGENT", question.length(), reply.length());
+            // Agent 多轮工具调用的 Token 用量难以逐次回调，按字数 * 系数估算。
+            // 中英文混合平均约 1.5~2 字符/token（中文 ~1.5，英文 ~4），
+            // 统一除以 2 保守估算防止低估，并标注 AGENT 场景便于区分精确值。
+            tokenAuditService.record(userId, "AGENT",
+                    Math.max(1, question.length() / 2),
+                    Math.max(1, reply.length() / 2));
             return reply;
         } catch (Exception e) {
             log.error("agent failed", e);
