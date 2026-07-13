@@ -6,6 +6,7 @@ import com.zhishu.config.RabbitConfig;
 import com.zhishu.vector.VectorStoreService;
 import io.minio.PutObjectArgs;
 import io.minio.MinioClient;
+import org.springframework.dao.DataIntegrityViolationException;
 import lombok.RequiredArgsConstructor;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
@@ -72,7 +73,16 @@ public class DocumentService {
         doc.setVersion(1);
         doc.setDeleted(0);
         doc.setChunkCount(0);
-        docRepository.save(doc);
+        try {
+            docRepository.save(doc);
+        } catch (DataIntegrityViolationException e) {
+            // 并发上传同一 MD5：唯一约束 (file_md5, deleted) 阻止重复插入，
+            // 返回已有记录，MinIO 残留对象由定期清理任务兜底
+            log.info("doc md5 concurrent duplicate, fallback to existing: {}", md5);
+            var existing = docRepository.findByFileMd5AndDeleted(md5, 0)
+                    .orElseThrow(() -> new BizException("文档上传失败，请稍后重试"));
+            return existing;
+        }
 
         redis.opsForValue().set(PROGRESS_KEY + doc.getId(), "0", Duration.ofHours(1));
         rabbitTemplate.convertAndSend(RabbitConfig.DOC_EXCHANGE, RabbitConfig.DOC_ROUTING_KEY, String.valueOf(doc.getId()));

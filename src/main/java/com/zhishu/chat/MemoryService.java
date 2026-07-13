@@ -10,10 +10,14 @@ import dev.langchain4j.model.output.Response;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * 上下文窗口控制：滑动窗口保留最近 N 轮 + 超长触发“历史摘要压缩”。
@@ -27,6 +31,11 @@ public class MemoryService {
     private final RedisChatMemoryStore memoryStore;
     private final ChatLanguageModel chatModel;
     private final TokenAuditService tokenAuditService;
+    private final StringRedisTemplate redis;
+
+    private static final DefaultRedisScript<Long> UNLOCK_SCRIPT = new DefaultRedisScript<>(
+            "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end",
+            Long.class);
 
     @Value("${app.memory.window-size}")     private int windowSize;
     @Value("${app.memory.summary-trigger}") private int summaryTrigger;
@@ -36,14 +45,28 @@ public class MemoryService {
     }
 
     public void append(String memoryId, Long userId, UserMessage userMessage, AiMessage aiMessage) {
-        List<ChatMessage> messages = load(memoryId);
-        messages.add(userMessage);
-        messages.add(aiMessage);
-
-        if (messages.size() > summaryTrigger) {
-            messages = compress(memoryId, userId, messages);
+        // Redis 互斥锁防止并发 append 覆盖写入（锁超时 30s，足够 LLM 摘要压缩完成）
+        String lockKey = "lock:memory:" + memoryId;
+        String lockValue = UUID.randomUUID().toString();
+        Boolean acquired = redis.opsForValue().setIfAbsent(lockKey, lockValue, Duration.ofSeconds(30));
+        if (!Boolean.TRUE.equals(acquired)) {
+            log.warn("memory lock contention for {}, proceeding without lock to avoid blocking", memoryId);
         }
-        memoryStore.updateMessages(memoryId, messages);
+        try {
+            List<ChatMessage> messages = load(memoryId);
+            messages.add(userMessage);
+            messages.add(aiMessage);
+
+            if (messages.size() > summaryTrigger) {
+                messages = compress(memoryId, userId, messages);
+            }
+            memoryStore.updateMessages(memoryId, messages);
+        } finally {
+            if (Boolean.TRUE.equals(acquired)) {
+                // 原子解锁：只删除自己持有的锁，不误删其他线程的锁
+                redis.execute(UNLOCK_SCRIPT, List.of(lockKey), lockValue);
+            }
+        }
     }
 
     /** 把窗口外的早期消息压成摘要，保留最近 keep 条原文。

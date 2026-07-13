@@ -1,6 +1,7 @@
 package com.zhishu.ticket;
 
 import com.zhishu.common.BizException;
+import jakarta.persistence.OptimisticLockException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -45,16 +46,34 @@ public class TicketService {
         return ticketRepository.save(t);
     }
 
-    /** 派单：状态机校验 + 最小负载处理人 */
-    @Transactional
+    /**
+     * 派单：状态机校验 + 最小负载处理人。
+     * 乐观锁冲突自动重试 3 次（Spring @Retryable 依赖额外依赖，手动循环更轻量）。
+     */
     public Ticket assign(String ticketNo) {
+        int retries = 0;
+        while (true) {
+            try {
+                return doAssign(ticketNo);
+            } catch (OptimisticLockException e) {
+                if (++retries >= 3) {
+                    log.error("assign {} failed after {} retries", ticketNo, retries);
+                    throw e;
+                }
+                log.warn("optimistic lock conflict on assign {}, retry {}/3", ticketNo, retries);
+            }
+        }
+    }
+
+    @Transactional
+    protected Ticket doAssign(String ticketNo) {
         Ticket t = mustGet(ticketNo);
         t.getStatus().assertCanTransitTo(TicketStatus.PROCESSING);
         Long handlerId = assignService.pickLeastLoaded();
         if (handlerId == null) throw new BizException("当前无可用处理人");
         t.setAssigneeId(handlerId);
         t.setStatus(TicketStatus.PROCESSING);
-        return ticketRepository.save(t);   // 并发冲突由 @Version 乐观锁兜住
+        return ticketRepository.save(t);
     }
 
     /**
