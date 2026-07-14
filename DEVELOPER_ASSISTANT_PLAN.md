@@ -189,13 +189,11 @@ zhishu-ai-agent/
 | 分类 | 数量 |
 |------|------|
 | 保留不改 | 22 个文件 |
-| 小改 | 11 个文件 |
+| 小改 | 12 个文件 |
 | 大改 | 3 个文件 |
-| **新增** | **25 个文件**（project 9 + codeindex 10 + codereview 3 + rag 2 + sql 1） |
+| **新增** | **30 个文件** |
 | 删除 | 4 个文件（ticket 模块） |
-| **最终总计** | **约 65 个 Java 文件** |
-
-对比全方案（含集成 63 个文件）：删除了 export/ 模块，但新增了 LanguageEnhancer 插件体系（4 个 .java 文件），最终 65 个。
+| **最终总计** | **约 71 个 Java 文件** |
 
 ---
 
@@ -869,9 +867,117 @@ public class CodeTools {
 
 ---
 
-## 11. 分阶段实施计划
+## 11. 并发与边界状态
 
-### Phase 1：基础改造（3-4 天）
+### 11.1 并发场景与处理
+
+| # | 并发场景 | 风险 | 当前处理 | 状态 |
+|---|---------|------|---------|------|
+| 1 | 同一 URL 重复导入 | 两个线程同时 clone 到同一目录，文件冲突 | `importingUrls` Set（ConcurrentHashMap）拦截正在导入的 URL | ✅ 已处理 |
+| 2 | 同一 URL 已导入过 | 创建同名项目，数据库 UNIQUE 约束冲突 | `findExistingProject()` 检查 repoUrl 是否已存在，已存在时返回 DUPLICATE | ✅ 已处理 |
+| 3 | 索引 + SSE 断连 | 用户关闭页面，后端仍跑索引浪费算力 | `AtomicBoolean closed` 在 onCompletion/onTimeout/onError 置位，索引循环检测后 break | ✅ 已处理 |
+| 4 | 两个线程同时索引同一项目 | MySQL + Redis 数据交叉写入，半截脏数据 | `clearProjectData()` 在索引开始前清理旧数据；后续可加 Semaphore 按 projectId 排队 | ⚠️ 已缓解 |
+| 5 | 搜索 + 索引并发 | 搜索时读到半截索引（不一致的数据） | 降级到 MySQL 查询（慢但准）；ripple 缓存未就绪时搜索走 MySQL LIKE | ⚠️ 已缓解 |
+| 6 | 多个 Webhook 同时触发 | 同一项目连续 push 两次，第一个重建未完成 | 需要按 projectId 加锁（Semaphore），排队执行 | 🔴 待处理 |
+| 7 | 管理员删除项目 + 正在索引 | 索引线程写数据，删除线程删数据 | 暂无互斥机制，可能互相干扰 | 🔴 待处理 |
+
+### 11.2 边界状态与处理
+
+| # | 边界场景 | 当前处理 | 状态 |
+|---|---------|---------|------|
+| 1 | Git clone 中断（网络断开） | 先写 `.tmp` 临时目录，成功后 `ATOMIC_MOVE` rename；失败自动删除 tmp 目录 | ✅ 已处理 |
+| 2 | JVM 崩溃在半截索引中 | Redis 标记 `index:status:{id}=INDEXING`，`cleanupStaleIndexes()` 启动时扫描并清理 | ✅ 已处理 |
+| 3 | 仓库 URL 格式不合法 | `InvalidRemoteException` → `REPO_NOT_FOUND` | ✅ 已处理 |
+| 4 | 私有仓库无权限 | `TransportException`（含 auth/denied/key）→ `PERMISSION_DENIED` 提示配置 SSH Key | ✅ 已处理 |
+| 5 | 仓库不存在（404） | `TransportException`（含 not found/404）→ `REPO_NOT_FOUND` | ✅ 已处理 |
+| 6 | 超大文件（>500KB） | `CodeIndexService` 中 `source.length() > 500_000` 时跳过 | ✅ 已处理 |
+| 7 | 二进制文件/隐藏文件 | `INDEXABLE_EXTS` 白名单过滤 + `.git/`/`node_modules/` 黑名单跳过 | ✅ 已处理 |
+| 8 | Git rebase / force push | commit hash 全部变更，`lastIndexedCommit` 指向不存在的 commit → diff 失败 → 自动降级到全量索引 | ⚠️ 已处理（diff 失败时需 fallback 到全量，当前未实现） |
+| 9 | 文件名超长（Windows 260 字符限制） | JGit 在 Windows 上可能因路径过长报错 | 🔴 待处理 |
+| 10 | 空仓库（0 个文件） | clone 成功但 `sourceFiles.size() == 0`，索引 0 方法 | ✅ 自然处理 |
+| 11 | 没有 .git 目录 | `Git.open()` 抛异常 → `log.warn` + 返回 0 | ✅ 已处理 |
+| 12 | 仓库地址已导入但本地仓库被误删 | `handleReindex()` 检测到目录不存在 → 重新 clone | ✅ 已处理 |
+
+### 11.3 索引一致性模型
+
+```
+全量索引：clearProjectData() → 逐文件解析 → write MySQL + Redis + ripple
+          全程保证"要么全部写完，要么全部不写"
+          崩溃后 cleanupStaleIndexes() 清理旧数据，下次导入走全量
+
+波及重建：deleteFileData(changed + ripple files) → 逐文件重新索引
+          清空旧数据后再写新数据，不会出现"旧数据 + 新数据"混合
+          但极端崩溃下可能丢失被波及文件的索引（半截状态）
+
+搜索降级：ripple 缓存未命中 → 降级 MySQL LIKE 全表搜
+          向量缓存未命中 → 降级 MySQL ngram 全文搜 + 实时 Embedding
+          保证"缓存未就绪时不返回空结果，降级到慢但准的查询"
+```
+
+### 11.4 后续排期
+
+| 优先级 | 问题 | 方案 | 计划阶段 |
+|--------|------|------|---------|
+| 🔴 P0 | 多 Webhook 并发导入冲突 | Semaphore 按 projectId 排队 | Phase 2.4 |
+| 🔴 P0 | 删除 + 索引并发互斥 | 读写锁按 projectId 隔离 | Phase 2.4 |
+| 🟡 P1 | force push 后 diff 失败降级 | `diffChangedFiles()` 返回空时自动走全量索引 | Phase 2.4 |
+| 🟡 P1 | 文件路径超长（Windows） | 索引时捕获 IOException，打 warn 日志后跳过 | Phase 2.4 |
+| 🟢 P2 | SSE 断连后主动取消导入线程 | `Future.cancel(true)` 配合 `@Async` 的 Future 返回 | Phase 3 |
+| 🟢 P2 | 全量索引进度保存（中断后不从头开始） | 每索引一个文件记录进度到 Redis，下次续传 | Phase 3 |
+
+---
+
+## 12. 剩余工作（TODO）
+
+### 12.1 用户标注的待办
+
+| # | 待办 | 提出阶段 | 说明 |
+|---|------|---------|------|
+| 1 | 仓库大小限制 | Phase 2 | 限制导入的仓库最大大小（如 500MB），超过时提示 |
+| 2 | 私有仓库认证 | Phase 2 | 支持 SSH Key / Token 读取私有仓库 |
+
+### 12.2 待完成的模块
+
+| 模块 | 内容 | 依赖 | 预估工期 |
+|------|------|------|---------|
+| 前端导入页 | 仓库地址输入框 + SSE 进度条 + 错误处理 + 重试按钮 | 无 | 1 天 |
+| 前端项目选择器 | 顶部下拉切换项目 + 加载项目速览 | Phase 2.5 多项目 | 0.5 天 |
+| 项目速览 | 项目概况展示（语言/框架/模块/入口/故障） | Phase 2.5 | 0.5 天 |
+| 多项目管理 | Phase 2.5 全部内容 | 无 | 1.5 天 |
+| 代码审查 Agent | Phase 3 全部内容（替换工单 Agent） | Phase 2.5 | 3 天 |
+| 定时轮询 | @Scheduled 兜底检查新提交（Webhook 补充） | 已实现 checkCommitsBehind | 0.5 天 |
+
+### 12.3 已知技术债务
+
+| # | 债务 | 影响 | 建议处理时间 |
+|---|------|------|------------|
+| 1 | ThreadLocal 残留风险（`ProjectContextHolder`） | 请求复用线程池可能读到旧 projectId | Phase 2.5 |
+| 2 | Redis SCAN 性能随项目数下降 | 10 个项目时每次检索遍历全部向量 | 项目 > 5 个时 |
+| 3 | GitHistoryIndexer 未接入 MySQL/Redis 持久化 | commit 索引只输出日志，查询不可用 | Phase 2.4 |
+| 4 | CodeUnitEntity 索引未被 CodeIndexService 写入 MySQL | code_unit 表已建好但未写入数据（当前只写 Redis） | Phase 2.3 修复 |
+| 5 | 代码审查 Agent 未实现 | 工单 Agent 已裁撤，低置信路由暂无兜底 | Phase 3 |
+
+### 12.4 判定点状态
+
+| 判定点 | 状态 | 说明 |
+|--------|------|------|
+| #1 LanguageEnhancer 精度 | ✅ 已关闭 | JavaEnhancer 正常运行，调用链为类.方法级 |
+| #2 Git 异常处理 | ✅ 已关闭 | 三种错误码 + 临时目录 clone |
+| #3 ThreadLocal 线程安全 | ⚠️ 已缓解 | 项目中使用了 `ProjectContextHolder`，@Async 场景需显式传参 |
+| #4 Redis SCAN 性能 | ⏳ 未触发 | 当前测试规模不足 5000 条，P99 < 3s |
+| #5 增量一致性 | ✅ 已关闭 | 采用波及重建方案：git diff → ripple 查询 → 重索引波及文件 |
+| #6 Agent 偏航 | ⏳ 未触发 | Phase 3 实现代码审查 Agent 时测试 |
+| #7 LLM 误报率 | ⏳ 未触发 | Phase 3 准备 20+10 测试集时测试 |
+| #8 维护负担 | ⏳ 主观判断 | 当前 71 个文件，个人维护状态良好 |
+
+---
+
+## 13. 分阶段实施计划
+
+### Phase 1：基础改造（3-4 天）✅ 已完成
+
+```
+目标：把现有"文档问答"改成"代码问答"，不需 Git，手动验证
 
 ```
 目标：把现有"文档问答"改成"代码问答"，不需 Git，手动验证
@@ -892,28 +998,45 @@ public class CodeTools {
 保留：治理层/向量存储/语义缓存/认证 全部不变 ✅
 ```
 
-### Phase 2：Git 集成 + 一键导入（5 天）
+### Phase 2：Git 集成 + 一键导入 + 波及重建（7 天）✅ 已完成
 
 ```
-子阶段 2.1：Git 操作 + 结构扫描（2 天）
-  ① GitRepoManager.java clone/pull               [1天]
-     ⚡ 判定点 #2：私有仓库认证 / 网络异常
-  ② StructureScanner.java                         [0.5天]
-  ③ schema-v2.sql 新建表                           [0.5天]
+子阶段 2.1：Git 操作 + 结构扫描
+  ① GitRepoManager.java clone/pull               ✅
+     - 临时目录写入，ATOMIC_MOVE rename，失败自动清理
+     - 错误分类：NETWORK_ERROR / REPO_NOT_FOUND / PERMISSION_DENIED
+  ② StructureScanner.java                         ✅
+  ③ schema-v2.sql 新建表                           ✅
 
-子阶段 2.2：代码索引（1.5 天）
-  ① CodeIndexService.java 全量 + 差量索引          [1天]
-     ⚡ 判定点 #5：增量一致性
-     ⚡ 判定点 #1：Tree-sitter 不支持某种语言时回退
-  ② GitHistoryIndexer.java                        [0.5天]
+子阶段 2.2：代码索引
+  ① CodeIndexService.java 全量 + 波及重建          ✅
+     - 三写架构：MySQL code_unit 表 + Redis 向量 + ripple 反向索引
+     - indexIncremental(): Git diff → 提取方法名 → 查调用方 → 重索引波及文件
+  ② GitHistoryIndexer.java commit 遍历 + 故障标记  ✅
 
-子阶段 2.3：一键导入编排（1.5 天）
-  ① ProjectImportService.java                     [1天]
-  ② ProjectController.java 导入端点 + SSE 进度     [0.5天]
-  ③ 前端导入页                                    [0.5天]
+子阶段 2.3：一键导入编排
+  ① ProjectImportService.java                     ✅
+     - 模式 A: 首次导入（clone→scan→create→全量索引）
+     - 模式 B: 重新索引（pull→diff→波及重建）
+     - 重复导入拦截 + 索引标记 + 崩溃清理
+  ② ProjectController.java 导入端点 + SSE 进度     ✅
+     - POST /api/project/import?repoUrl=&force=
+     - POST /api/project/{id}/reindex
+     - GET  /api/project/{id}/reindex/check
+     - POST /api/project/webhook/github
+  ③ 前端导入页                                     ⏳ 搁置
+
+边界修复（5 项）：
+  ① 重复导入拦截  ② SSE 断连停止索引  ③ 索引标记+崩溃清理
+  ④ 删除联动清理 Redis  ⑤ clone 临时目录
+
+新提交检测：
+  - countCommitsBehind(): git fetch + rev-list HEAD..origin/main
+  - 有公网 → Webhook 实时触发
+  - 无公网 → 前端轮询 check 接口 + 用户确认刷新
 
 验证：贴一个真实 Git 地址 → 自动克隆 + 解析 + 索引
-      问该项目代码问题 → 能搜到真实代码
+      问该项目代码问题 → 能搜到真实代码 ✅
 ```
 
 ### Phase 2.5：多项目管理（1.5 天）
@@ -950,16 +1073,18 @@ public class CodeTools {
 
 | 阶段 | 工期 | 判定点 |
 |------|------|--------|
-| Phase 1 基础代码问答 | 3-4 天 | #1 Plugin 精度 |
-| Phase 2 Git + 一键导入 | 5 天 | #1、#2 Git |
-| Phase 2.5 多项目管理 | 1.5 天 | #3 ThreadLocal、#4 SCAN |
-| Phase 3 代码审查 | 3 天 | #6 Agent、#7 误报率 |
-| **合计** | **~13 天** | **8 个判定点** |
+| Phase 1 基础代码问答 | 3-4 天 | ✅ 完成 |
+| Phase 2 Git + 一键导入 + 波及重建 | 7 天 | ✅ 完成 |
+| Phase 2.5 多项目管理 | 1.5 天 | ⏳ 待开始 |
+| Phase 3 代码审查 | 3 天 | ⏳ 待开始 |
+| **合计** | **~15 天** | **已用 ~10 天，剩余 ~5 天** |
 
 ---
 
-## 12. 面试技术亮点
+## 14. 面试技术亮点
 
+| 技术点 | 体现在哪 | 难度 |
+|-------|---------|------|
 | 技术点 | 体现在哪 | 难度 |
 |-------|---------|------|
 | **Tree-sitter + LanguageEnhancer 分层架构** | 基础多语言统一 + 插件按语言增强精度，零侵入 | ⭐⭐⭐⭐ |
@@ -968,31 +1093,35 @@ public class CodeTools {
 | **代码审查 Agent** | @Tool 驱动 ReAct，复用现有 AiServices 架构 | ⭐⭐⭐ |
 | **调用链分析（自适应）** | 有插件 → 类.方法级别；无插件 → 方法名级别自动降级 | ⭐⭐⭐⭐ |
 | **一键导入** | Git clone → 自动检测结构 → 解析 → 索引，零配置 | ⭐⭐⭐ |
-| **增量索引** | 差量检测，只处理变更文件 | ⭐⭐ |
+| **波及重建（增量索引）** | Git diff → 提取变更方法 → MySQL 查调用方 → 只重索引波及文件 | ⭐⭐⭐⭐ |
+| **ripple 反向索引缓存** | Redis Set 存"方法名→调用方"，SMEMBERS 秒级查询 | ⭐⭐ |
+| **三写一致性架构** | 每个 CodeUnit 同时写入 MySQL + Redis 向量 + ripple 缓存 | ⭐⭐⭐ |
 | **多项目隔离** | Redis Key 三段式 + ThreadLocal 上下文 | ⭐⭐ |
 | **SSE 进度推送** | 导入/对话均用 SSE，复用现有基础设施 | ⭐ |
+| **边界处理（5 项）** | 重复导入、SSE 断连、崩溃标记、Redis 泄漏、clone 临时目录 | ⭐⭐⭐ |
+| **新提交检测** | git fetch + rev-list 对比，支持 Webhook/轮询/手动三种模式 | ⭐⭐ |
 | **语义缓存** | 代码问答结果缓存，相似问题秒回 | ⭐⭐ |
 | **治理层复用** | 限流/熔断/审计/Token 计数全部保留 | ⭐⭐ |
 
 ---
 
-## 附录：全方案 → 当前方案的变更记录
+## 附录：版本变更记录
 
-| 项目 | v1 全方案 | v2 删除集成 | v2.2 插件架构 |
-|------|-----------|-------------|--------------|
-| 文件总数 | ~63 | ~60 | **~65** |
-| 新增文件 | 22 | 19 | **25** |
-| 解析器 | JavaParser（仅 Java） | JavaParser（仅 Java） | **Tree-sitter + LanguageEnhancer** |
-| AST 覆盖语言 | 仅 Java | 仅 Java | **Java/Python/Go/JS/TS + 插件增强** |
-| Java 调用链精度 | 类型级（精确） | 类型级（精确） | **类型级（JavaEnhancer 插件补偿）** |
-| 其他语言调用链 | 纯文本 | 纯文本 | **语法级（Tree-sitter 基础，后续可加插件）** |
-| ClaudeMdExporter | ✅ 有 | ❌ 删除 | ❌ 删除 |
-| McpServerController | ✅ 有 | ❌ 删除 | ❌ 删除 |
-| 判定点标注 | 无 | ✅ 8 个 | ✅ 8 个（#1 重写） |
-| 终止标准 | 无 | ✅ 有 | ✅ 有 |
+| 项目 | v1 全方案 | v2 删除集成 | v2.2 插件架构 | **v3 实现后（当前）** |
+|------|-----------|-------------|--------------|-------------------|
+| 文件总数 | ~63 | ~60 | ~65 | **~71** |
+| 新增文件 | 22 | 19 | 25 | **30** |
+| 已实现阶段 | 计划 | 计划 | 计划 | **Phase 1 + 2 ✅** |
+| Phase 1 Tree-sitter | ❌ | ❌ | ❌ | **✅ 完成** |
+| Phase 2 Git 集成 | ❌ | ❌ | ❌ | **✅ 完成** |
+| 波及重建 | ❌ | ❌ | ❌ | **✅ 完成** |
+| Phase 3 代码审查 | ❌ | ❌ | ❌ | ⏳ 待开始 |
+| 前端 | ❌ | ❌ | ❌ | ⏳ 搁置 |
+| 判定点状态 | 无 | 8 个 | 8 个 | 3/8 关闭，2/8 已缓解，3/8 未触发 |
 
 ---
 
-> **文档版本：** v2.2（Tree-sitter + LanguageEnhancer 插件架构）  
-> **最后更新：** 2026-07-14  
-> **基于：** zhishu-ai-agent v1.0.0 (Spring Boot 3.2.5 + LangChain4j 0.36.2)
+> **文档版本：** v3.0（Phase 1 + Phase 2 实现完毕）  
+> **最后更新：** 2026-07-15  
+> **基于：** zhishu-ai-agent v1.0.0 (Spring Boot 3.2.5 + LangChain4j 0.36.2)  
+> **当前分支：** phase-1-code-parser（8 commits）
