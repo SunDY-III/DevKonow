@@ -72,14 +72,13 @@ public class ChatService {
             // 2. RAG 混合检索
             RagResult rag = ragService.retrieve(userId, question);
 
-            // 3. 置信度路由：知识库答不了 -> 工单 Agent 接管
+            // 3. 置信度路由：知识库答不了 -> 代码检索 + LLM 兜底
+            //    （原工单 Agent 流程已在 DevKnow 裁撤，替换为代码审查 Agent）
             if (rag.getConfidence() < confidenceThreshold) {
-                log.info("low confidence {}, route to ticket agent", rag.getConfidence());
-                String agentReply = ticketAgentService.handle(userId, conversationId, question);
-                send(emitter, closed, "ticket", "true");
-                send(emitter, closed, "token", agentReply);
-                send(emitter, closed, "done", "");
-                emitter.complete();
+                log.info("low confidence {}, route to code fallback", rag.getConfidence());
+                // Phase 1：尝试代码检索，没有命中再由 LLM 直接回答
+                // Phase 3 接入多源检索 + 代码审查 Agent
+                llmStreamingService.generateWithFallback(userId, conversationId, question, rag, emitter, closed, queryVector);
                 return;
             }
 

@@ -40,8 +40,21 @@ public class VectorStoreService {
 
     /** 余弦相似度 TopK。返回 score 已归一化到 [0,1] 附近，可直接做置信度判断 */
     public List<ScoredChunk> search(float[] queryVector, int topK) {
+        return searchByPrefix(KEY_PREFIX + "*", queryVector, topK);
+    }
+
+    /**
+     * 按自定义前缀搜索向量（用于多项目隔离）。
+     * 前缀示例：
+     * <ul>
+     *   <li>"vec:chunk:*" — 兼容现有文档向量</li>
+     *   <li>"vec:0:code:*" — 项目 0 的代码向量（Phase 1）</li>
+     *   <li>"vec:1:code:*" — 项目 1 的代码向量（Phase 2.5）</li>
+     * </ul>
+     */
+    public List<ScoredChunk> searchByPrefix(String keyPrefix, float[] queryVector, int topK) {
         List<ScoredChunk> result = new ArrayList<>();
-        try (Cursor<String> cursor = redis.scan(ScanOptions.scanOptions().match(KEY_PREFIX + "*").count(500).build())) {
+        try (Cursor<String> cursor = redis.scan(ScanOptions.scanOptions().match(keyPrefix).count(500).build())) {
             while (cursor.hasNext()) {
                 String json = redis.opsForValue().get(cursor.next());
                 if (json == null) continue;

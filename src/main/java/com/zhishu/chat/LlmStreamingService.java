@@ -58,11 +58,14 @@ public class LlmStreamingService {
 
         List<ChatMessage> messages = new ArrayList<>();
         messages.add(SystemMessage.from("""
-                你是企业知识库助手。请严格基于下方知识库片段回答用户问题：
-                1. 只使用片段中的信息，不要编造；
-                2. 回答末尾用 [片段n] 标注引用了哪些片段；
-                3. 片段不足以回答时明确说明。
-                ===== 知识库片段 =====
+                你是资深开发者代码助手。请基于下方代码片段和知识库内容回答用户的问题。
+                回答规则：
+                1. 给出具体的文件名、方法名、行号；
+                2. 解释逻辑时附上调用链分析（谁调了谁）；
+                3. 引用格式：[文件:行号] 或 [片段n]；
+                4. 如果代码片段不足以回答，请明确说明缺什么信息；
+                5. 涉及历史故障或相关提交时请一并指出。
+                ===== 检索到的内容 =====
                 """ + context));
         messages.addAll(memoryService.load(conversationId));   // 多轮记忆
         UserMessage userMessage = UserMessage.from(question);

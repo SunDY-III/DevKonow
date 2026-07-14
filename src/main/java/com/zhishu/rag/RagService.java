@@ -14,6 +14,8 @@ import java.util.List;
 
 /**
  * RAG 读链路：混合检索（向量 + 关键词）-> RRF 融合 -> 重排序 TopN。
+ *
+ * <p>v2 新增：代码检索通道 {@link #retrieveCode(Long, String)}，用于按方法粒度搜索代码索引。
  */
 @Slf4j
 @Service
@@ -65,6 +67,43 @@ public class RagService {
         log.info("rag retrieve: q={}, vec={}, kw={}, fused={}, confidence={}",
                 question, vectorHits.size(), keywordHits.size(), fused.size(), String.format("%.3f", confidence));
         return new RagResult(topN, confidence);
+    }
+
+    /**
+     * 代码检索通道：按方法粒度搜索代码向量索引。
+     * 使用前缀 "vec:0:code:"（Phase 1 默认 projectId=0），
+     * Phase 2 引入多项目后切换为 "vec:{projectId}:code:"。
+     *
+     * @param userId   用户 ID
+     * @param question 查询问题
+     * @return 检索到的代码块列表（ScoredChunk），按相似度降序
+     */
+    public List<ScoredChunk> retrieveCode(Long userId, String question) {
+        float[] queryVector = embed(userId, question);
+        // Phase 1 暂用 projectId=0，Phase 2.5 接入 projectId
+        String codePrefix = "vec:0:code:*";
+        List<ScoredChunk> results = vectorStoreService.searchByPrefix(codePrefix, queryVector, vectorTopK);
+        log.info("rag retrieveCode: q={}, hits={}", question, results.size());
+        return results;
+    }
+
+    /**
+     * 构建代码上下文（用于 LLM Prompt）。
+     * 格式：
+     * [文件: OrderService.java:42]
+     * public OrderVO createOrder(CreateReq req) { ... }
+     */
+    public String buildCodeContext(List<ScoredChunk> chunks) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < chunks.size(); i++) {
+            ScoredChunk c = chunks.get(i);
+            sb.append("[片段").append(i + 1)
+              .append(" 文件:").append(c.getFileName() != null ? c.getFileName() : "未知")
+              .append(" 行:").append(c.getSeq())  // seq 字段复用为行号
+              .append("]\n")
+              .append(c.getContent()).append("\n\n");
+        }
+        return sb.toString();
     }
 
     /** 组装进 Prompt 的上下文段，带编号供 LLM 引用 */
