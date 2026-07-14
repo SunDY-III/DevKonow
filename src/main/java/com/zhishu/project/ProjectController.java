@@ -1,5 +1,6 @@
 package com.zhishu.project;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zhishu.common.ApiResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,6 +21,7 @@ public class ProjectController {
 
     private final ProjectService projectService;
     private final ProjectImportService projectImportService;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
      * 一键导入项目。
@@ -34,11 +36,15 @@ public class ProjectController {
      *   error.errorCode == "REPO_NOT_FOUND"   → 显示"仓库不存在，请检查地址"
      *   error.errorCode == "PERMISSION_DENIED" → 提示配置 SSH Key
      *   project → 跳转到项目页
+     *
+     * @param repoUrl   Git 仓库地址
+     * @param force     是否强制重新索引（已导入时使用，默认 false）
      */
     @PostMapping("/import")
-    public SseEmitter importProject(@RequestParam String repoUrl) {
+    public SseEmitter importProject(@RequestParam String repoUrl,
+                                     @RequestParam(defaultValue = "false") boolean force) {
         SseEmitter emitter = new SseEmitter(300_000L);  // 5 分钟超时
-        projectImportService.importFromRepo(repoUrl, emitter);
+        projectImportService.importFromRepo(repoUrl, force, emitter);
         return emitter;
     }
 
@@ -57,7 +63,38 @@ public class ProjectController {
             emitter.complete();
             return emitter;
         }
-        return importProject(repoUrls.get(0));
+        return importProject(repoUrls.get(0), false);
+    }
+
+    /**
+     * 重新索引已导入的项目（波及重建）。
+     * pull → diff → 增量索引，不走全量。
+     */
+    @PostMapping("/{id}/reindex")
+    public SseEmitter reindexProject(@PathVariable Long id) {
+        CodeProject project = projectService.getProject(id);
+        String repoUrl = extractFirstRepoUrl(project);
+        if (repoUrl == null) {
+            SseEmitter emitter = new SseEmitter(0L);
+            try {
+                emitter.send(SseEmitter.event().name("error")
+                        .data("{\"errorCode\":\"INVALID\",\"message\":\"项目没有关联的仓库地址\"}"));
+            } catch (Exception ignored) {}
+            emitter.complete();
+            return emitter;
+        }
+        // 强制重新索引
+        return importProject(repoUrl, true);
+    }
+
+    private String extractFirstRepoUrl(CodeProject project) {
+        if (project.getRepoUrls() == null) return null;
+        try {
+            List<String> urls = objectMapper.readValue(project.getRepoUrls(), List.class);
+            return urls.isEmpty() ? null : urls.get(0);
+        } catch (Exception e) {
+            return project.getRepoUrls().replaceAll("[\\[\\]\"]", "").split(",")[0].trim();
+        }
     }
 
     /**

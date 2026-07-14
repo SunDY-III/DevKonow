@@ -16,6 +16,20 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.List;
+
+import org.eclipse.jgit.diff.DiffEntry;
+import org.eclipse.jgit.diff.DiffFormatter;
+import org.eclipse.jgit.lib.ObjectId;
+import org.eclipse.jgit.lib.ObjectReader;
+import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.revwalk.RevTree;
+import org.eclipse.jgit.revwalk.RevWalk;
+import org.eclipse.jgit.treewalk.AbstractTreeIterator;
+import org.eclipse.jgit.treewalk.CanonicalTreeParser;
+import org.eclipse.jgit.util.io.DisabledOutputStream;
 
 /**
  * Git 仓库管理器。
@@ -147,9 +161,120 @@ public class GitRepoManager {
         return url;
     }
 
+    // ======================== 重新索引 ========================
+
     /**
-     * 清理本地仓库。
+     * 拉取仓库最新变更（不会改变本地未提交的修改）。
      */
+    public String pull(Path repoPath) {
+        try (Git git = Git.open(repoPath.toFile())) {
+            var result = git.pull().call();
+            if (result.isSuccessful()) {
+                log.info("Git pull 成功: {}", repoPath);
+            } else {
+                log.warn("Git pull 未成功: {}", result);
+            }
+            // 返回最新的 HEAD hash
+            return getHeadCommitHash(repoPath);
+        } catch (Exception e) {
+            log.warn("Git pull 失败: {}", repoPath, e);
+            return null;
+        }
+    }
+
+    /**
+     * 获取上次索引的 commit hash（从 Redis）。
+     */
+    public String getLastIndexedCommit(Long projectId,
+                                        org.springframework.data.redis.core.StringRedisTemplate redis) {
+        return redis.opsForValue().get("index:commit:" + projectId);
+    }
+
+    // ======================== 波及重建：Git diff ========================
+
+    /**
+     * 获取当前 HEAD 的 commit hash。
+     */
+    public String getHeadCommitHash(Path repoPath) {
+        try (Git git = Git.open(repoPath.toFile())) {
+            var commits = git.log().setMaxCount(1).call();
+            if (commits.iterator().hasNext()) {
+                return commits.iterator().next().getName();
+            }
+        } catch (Exception e) {
+            log.warn("获取 HEAD commit hash 失败: {}", repoPath, e);
+        }
+        return null;
+    }
+
+    /**
+     * 对比两个 commit 之间的变更文件列表。
+     *
+     * @param repoPath     仓库本地路径
+     * @param sinceCommit  起始 commit hash（不含此 commit 本身）
+     * @return 变更文件列表（相对于仓库根目录的路径）
+     */
+    public List<String> diffChangedFiles(Path repoPath, String sinceCommit) {
+        List<String> changedFiles = new ArrayList<>();
+        if (sinceCommit == null) return changedFiles;
+
+        try (Git git = Git.open(repoPath.toFile())) {
+            ObjectId sinceId = git.getRepository().resolve(sinceCommit);
+            ObjectId headId = git.getRepository().resolve("HEAD");
+
+            if (sinceId == null || headId == null) {
+                log.warn("diff 失败: 无法解析 commit hash, since={}", sinceCommit);
+                return changedFiles;
+            }
+
+            try (ObjectReader reader = git.getRepository().newObjectReader();
+                 RevWalk walk = new RevWalk(git.getRepository())) {
+
+                RevCommit sinceCommitObj = walk.parseCommit(sinceId);
+                RevCommit headCommitObj = walk.parseCommit(headId);
+
+                try (DiffFormatter diffFormatter = new DiffFormatter(DisabledOutputStream.INSTANCE)) {
+                    diffFormatter.setRepository(git.getRepository());
+                    diffFormatter.setDetectRenames(true);
+
+                    List<DiffEntry> diffs = diffFormatter.scan(
+                            prepareTreeParser(git.getRepository(), sinceCommitObj),
+                            prepareTreeParser(git.getRepository(), headCommitObj)
+                    );
+
+                    for (DiffEntry diff : diffs) {
+                        String path = diff.getNewPath();
+                        if (!path.equals("/dev/null")) {
+                            changedFiles.add(path);
+                        }
+                    }
+                }
+            }
+
+            log.info("Git diff: since={}, changedFiles={}", sinceCommit.substring(0, 8), changedFiles.size());
+
+        } catch (Exception e) {
+            log.warn("Git diff 失败: {}", repoPath, e);
+        }
+
+        return changedFiles;
+    }
+
+    private AbstractTreeIterator prepareTreeParser(Repository repository, RevCommit commit) throws Exception {
+        RevWalk walk = new RevWalk(repository);
+        try {
+            RevTree tree = walk.parseTree(commit.getTree().getId());
+            CanonicalTreeParser parser = new CanonicalTreeParser();
+            try (ObjectReader reader = repository.newObjectReader()) {
+                parser.reset(reader, tree.getId());
+            }
+            return parser;
+        } finally {
+            walk.dispose();
+        }
+    }
+
+    // ======================== 清理 ========================
     public void deleteLocalRepo(Long projectId, String repoName) {
         Path path = getRepoPath(projectId, repoName);
         deleteDirectory(path.toFile());
