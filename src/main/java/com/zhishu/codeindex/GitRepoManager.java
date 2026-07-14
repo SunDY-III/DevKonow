@@ -190,6 +190,49 @@ public class GitRepoManager {
         return redis.opsForValue().get("index:commit:" + projectId);
     }
 
+    // ======================== 新提交检测（Webhook / 定时轮询共用） ========================
+
+    /**
+     * 检查本地仓库落后远程多少次提交。
+     * 用于两种场景：
+     * <ul>
+     *   <li>前端轮询：检测到有新提交时显示"刷新"按钮</li>
+     *   <li>定时任务：behind > 0 时自动触发波及重建</li>
+     * </ul>
+     *
+     * @return 落后次数，0 = 已是最新，-1 = 检测失败
+     */
+    public int countCommitsBehind(Path repoPath) {
+        if (repoPath == null || !repoPath.toFile().exists()) return -1;
+
+        try (Git git = Git.open(repoPath.toFile())) {
+            // fetch 远程最新（不合并）
+            git.fetch().call();
+
+            ObjectId head = git.getRepository().resolve("HEAD");
+            ObjectId remote = git.getRepository().resolve("origin/HEAD");
+
+            if (head == null || remote == null) {
+                // 尝试 origin/main 或 origin/master
+                remote = git.getRepository().resolve("origin/main");
+                if (remote == null) remote = git.getRepository().resolve("origin/master");
+            }
+            if (head == null || remote == null) return -1;
+
+            try (RevWalk walk = new RevWalk(git.getRepository())) {
+                walk.markStart(walk.parseCommit(remote));
+                walk.markUninteresting(walk.parseCommit(head));
+                int count = 0;
+                for (RevCommit ignored : walk) count++;
+                return count;
+            }
+
+        } catch (Exception e) {
+            log.warn("检查新提交失败: {}", repoPath, e);
+            return -1;
+        }
+    }
+
     // ======================== 波及重建：Git diff ========================
 
     /**
