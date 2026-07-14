@@ -38,6 +38,19 @@ public class VectorStoreService {
         redis.opsForValue().set(key, objectMapper.writeValueAsString(record));
     }
 
+    /**
+     * 使用自定义 Key 前缀保存向量记录。
+     * 用于多项目隔离存储：vec:{projectId}:code:{chunkId}
+     *
+     * @param keyPrefix 自定义前缀，如 "vec:1:code:"
+     * @param record    向量记录
+     */
+    @SneakyThrows
+    public void saveWithKey(String keyPrefix, VectorRecord record) {
+        String key = keyPrefix + record.getChunkId();
+        redis.opsForValue().set(key, objectMapper.writeValueAsString(record));
+    }
+
     /** 余弦相似度 TopK。返回 score 已归一化到 [0,1] 附近，可直接做置信度判断 */
     public List<ScoredChunk> search(float[] queryVector, int topK) {
         return searchByPrefix(KEY_PREFIX + "*", queryVector, topK);
