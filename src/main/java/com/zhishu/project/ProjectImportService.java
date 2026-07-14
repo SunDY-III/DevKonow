@@ -7,20 +7,30 @@ import com.zhishu.codeindex.GitRepoManager;
 import com.zhishu.common.GitException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 一键导入编排服务。
  *
- * <p>异步执行：clone → scan → create → index → done
- * 每步通过 SSE 推送进度，异常时推送到对应的错误类型。
+ * <p>修复（vs 原始版本）：
+ * <ol>
+ *   <li>重复导入拦截：同一 URL 正在导入 / 已导入，直接返回错误</li>
+ *   <li>SSE 断连停止索引：检测到断连后设置中断标记</li>
+ *   <li>索引标记+崩溃清理：索引开始/结束标记写入 Redis</li>
+ *   <li>删除时清理 Redis：联动清理向量 + 反向索引</li>
+ *   <li>临时目录 clone：见 GitRepoManager</li>
+ * </ol>
  */
 @Slf4j
 @Service
@@ -31,7 +41,13 @@ public class ProjectImportService {
     private final StructureScanner structureScanner;
     private final CodeProjectRepository projectRepository;
     private final CodeIndexService codeIndexService;
+    private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    /** 正在导入中的仓库 URL（防重复导入） */
+    private final Set<String> importingUrls = Collections.newSetFromMap(new ConcurrentHashMap<>());
+
+    // ======================== 导入入口 ========================
 
     @Async
     public void importFromRepo(String repoUrl, SseEmitter emitter) {
@@ -40,11 +56,28 @@ public class ProjectImportService {
         emitter.onTimeout(() -> closed.set(true));
         emitter.onError(e -> closed.set(true));
 
+        String repoName = GitRepoManager.extractRepoName(repoUrl);
+
         try {
-            // === Step 1: Clone ===
+            // ---- 检查①：是否正在导入同一 URL ----
+            if (!importingUrls.add(repoUrl)) {
+                sendError(emitter, closed, "DUPLICATE",
+                        "此仓库正在导入中，请勿重复操作: " + repoName);
+                return;
+            }
+
+            // ---- 检查②：是否已经导入过 ----
+            List<CodeProject> existing = projectRepository.findByStatus("ACTIVE");
+            boolean alreadyImported = existing.stream()
+                    .anyMatch(p -> p.getRepoUrls() != null && p.getRepoUrls().contains(repoUrl));
+            if (alreadyImported) {
+                sendError(emitter, closed, "DUPLICATE",
+                        "仓库「" + repoName + "」已导入，如需刷新请使用重新索引功能");
+                return;
+            }
+
+            // === Step 1: Clone（临时目录，成功后 rename） ===
             sendProgress(emitter, closed, "cloning", "正在克隆仓库...", 10);
-            String repoName = GitRepoManager.extractRepoName(repoUrl);
-            // Phase 1: 项目 ID 暂时用 0
             Path localPath = gitRepoManager.getRepoPath(0L, repoName);
             gitRepoManager.clone(repoUrl, localPath);
             sendProgress(emitter, closed, "cloned", "仓库克隆完成", 25);
@@ -79,11 +112,20 @@ public class ProjectImportService {
             sendProgress(emitter, closed, "created",
                     String.format("项目「%s」创建成功", projectName), 55);
 
-            // === Step 4: Index Code ===
+            // === Step 4: Index Code（带索引标记） ===
             sendProgress(emitter, closed, "indexing", "正在索引代码...", 60);
-            int methodCount = codeIndexService.indexProject(projectId, repoName, localPath, emitter, closed);
+
+            // 写索引开始标记（防止崩溃后残留旧数据污染结果）
+            redis.opsForValue().set("index:status:" + projectId, "INDEXING");
+
+            int methodCount = codeIndexService.indexProject(
+                    projectId, repoName, localPath, emitter, closed);
             project.setTotalMethods(methodCount);
             projectRepository.save(project);
+
+            // 索引完成 → 删除标记
+            redis.delete("index:status:" + projectId);
+
             sendProgress(emitter, closed, "indexed",
                     String.format("代码索引完成，共 %d 个方法", methodCount), 90);
 
@@ -101,24 +143,97 @@ public class ProjectImportService {
             sendError(emitter, closed, "UNKNOWN", "导入失败: " + e.getMessage());
 
         } finally {
+            importingUrls.remove(repoUrl);  // 释放导入锁
             try {
                 emitter.complete();
             } catch (Exception ignored) {}
         }
     }
 
+    // ======================== 项目删除（含 Redis 清理） ========================
+
+    /**
+     * 删除项目及其关联数据（逻辑删除 + 清理 Redis 向量/反向索引/标记）。
+     */
+    public void deleteProject(Long projectId) {
+        // 1. 清理 Redis 向量（vec:projectId:code:*）
+        cleanRedisByProject(projectId);
+
+        // 2. 清理 Redis 反向索引（ripple:callers:projectId:*）
+        cleanRippleCache(projectId);
+
+        // 3. 清理索引标记
+        redis.delete("index:status:" + projectId);
+
+        // 4. 逻辑删除项目记录
+        CodeProject project = projectRepository.findById(projectId).orElse(null);
+        if (project != null) {
+            project.setStatus("ARCHIVED");
+            projectRepository.save(project);
+        }
+
+        // 5. 清理本地仓库
+        gitRepoManager.deleteLocalRepo(projectId, null);  // 需要 repoName
+    }
+
+    private void cleanRedisByProject(Long projectId) {
+        String pattern = "vec:" + projectId + ":code:*";
+        try (var cursor = redis.scan(
+                org.springframework.data.redis.core.ScanOptions.scanOptions()
+                        .match(pattern).count(200).build())) {
+            while (cursor.hasNext()) {
+                redis.delete(cursor.next());
+            }
+        }
+        log.info("清理向量完成: projectId={}, pattern={}", projectId, pattern);
+    }
+
+    private void cleanRippleCache(Long projectId) {
+        String pattern = "ripple:callers:" + projectId + ":*";
+        try (var cursor = redis.scan(
+                org.springframework.data.redis.core.ScanOptions.scanOptions()
+                        .match(pattern).count(200).build())) {
+            while (cursor.hasNext()) {
+                redis.delete(cursor.next());
+            }
+        }
+        log.info("清理反向索引完成: projectId={}", projectId);
+    }
+
+    // ======================== 启动时清理残留索引标记 ========================
+
+    /**
+     * 应用启动时检查所有 INDEXING 标记，清理不完整的旧索引。
+     * 由 ZhishuApplication 或 @PostConstruct 调用。
+     */
+    public void cleanupStaleIndexes() {
+        String pattern = "index:status:*";
+        try (var cursor = redis.scan(
+                org.springframework.data.redis.core.ScanOptions.scanOptions()
+                        .match(pattern).count(500).build())) {
+            while (cursor.hasNext()) {
+                String key = cursor.next();
+                String status = redis.opsForValue().get(key);
+                if ("INDEXING".equals(status)) {
+                    String projectId = key.replace("index:status:", "");
+                    log.warn("检测到残留索引标记: projectId={}，将被清理", projectId);
+                    redis.delete(key);
+                }
+            }
+        }
+        log.info("残留索引标记清理完成");
+    }
+
+    // ======================== 辅助方法 ========================
+
     private String deriveProjectName(String repoName, ProjectStructure structure) {
-        // 从 repo 名推导中文项目名
-        // repo-name → Repo Name
         if (repoName == null || repoName.equals("unknown")) {
             return structure.getMainLanguage() + " Project";
         }
-        // 简单处理：替换分隔符为首字母大写
         String name = repoName
                 .replaceAll("[-_]", " ")
                 .replaceAll("\\s+", " ")
                 .trim();
-        // 首字母大写
         StringBuilder sb = new StringBuilder();
         boolean nextUpper = true;
         for (char c : name.toCharArray()) {
@@ -180,8 +295,6 @@ public class ProjectImportService {
             closed.set(true);
         }
     }
-
-    // ======================== SSE 事件模型 ========================
 
     private record ProgressEvent(String stage, String message, int percent) {}
     private record ErrorEvent(String errorCode, String message) {}

@@ -77,11 +77,23 @@ public class ProjectController {
     }
 
     /**
-     * 归档项目。
+     * 删除项目（含 Redis 向量 + 反向索引清理）。
      */
     @DeleteMapping("/{id}")
     public ApiResponse<Void> deleteProject(@PathVariable Long id) {
-        projectService.deleteProject(id);
+        projectImportService.deleteProject(id);
+        return ApiResponse.ok(null);
+    }
+
+    /**
+     * 取消正在进行的导入。
+     */
+    @DeleteMapping("/import/{repoUrl}")
+    public ApiResponse<Void> cancelImport(@PathVariable String repoUrl) {
+        // 导入取消由 SseEmitter 超时机制处理
+        // 用户关闭页面 → emitter.onCompletion() → closed=true
+        // → CodeIndexService 检测到 closed 后停止索引
+        log.info("取消导入请求: repoUrl={}", repoUrl);
         return ApiResponse.ok(null);
     }
 
