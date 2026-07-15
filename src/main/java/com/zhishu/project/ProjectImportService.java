@@ -62,14 +62,27 @@ public class ProjectImportService {
      * @param forceReindex 是否强制重新索引（即使已导入）
      * @param emitter     SSE 推送器
      */
+    /** 当前导入的私有仓库 Token（由 Controller 设置） */
+    private String currentToken = null;
+
+    public void setToken(String token) {
+        this.currentToken = token;
+    }
+
     @Async
     public void importFromRepo(String repoUrl, boolean forceReindex, SseEmitter emitter) {
+        importFromRepo(repoUrl, forceReindex, null, emitter);
+    }
+
+    @Async
+    public void importFromRepo(String repoUrl, boolean forceReindex, String token, SseEmitter emitter) {
         AtomicBoolean closed = new AtomicBoolean(false);
         emitter.onCompletion(() -> closed.set(true));
         emitter.onTimeout(() -> closed.set(true));
         emitter.onError(e -> closed.set(true));
 
         String repoName = GitRepoManager.extractRepoName(repoUrl);
+        this.currentToken = token;
 
         try {
             // ---- 检查：是否正在导入同一 URL ----
@@ -125,7 +138,7 @@ public class ProjectImportService {
                                     SseEmitter emitter, AtomicBoolean closed) {
         sendProgress(emitter, closed, "cloning", "正在克隆仓库...", 10);
         Path localPath = gitRepoManager.getRepoPath(0L, repoName);
-        gitRepoManager.clone(repoUrl, localPath);
+        gitRepoManager.clone(repoUrl, localPath, currentToken);
         sendProgress(emitter, closed, "cloned", "仓库克隆完成", 25);
 
         sendProgress(emitter, closed, "scanning", "正在扫描项目结构...", 30);
@@ -172,8 +185,8 @@ public class ProjectImportService {
 
         Path localPath = gitRepoManager.getRepoPath(projectId != null ? projectId : 0L, repoName);
         if (!localPath.toFile().exists()) {
-            // 本地仓库不存在（被误删），重新 clone
-            gitRepoManager.clone(repoUrl, localPath);
+            // 本地仓库不存在（被误删），重新 clone（带 Token）
+            gitRepoManager.clone(repoUrl, localPath, currentToken);
         } else {
             gitRepoManager.pull(localPath);
         }

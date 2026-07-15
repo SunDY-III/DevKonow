@@ -7,6 +7,7 @@ import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.api.errors.InvalidRemoteException;
 import org.eclipse.jgit.api.errors.TransportException;
+import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -55,10 +56,11 @@ public class GitRepoManager {
      *
      * @param repoUrl   Git 仓库地址
      * @param localPath 最终存储路径
+     * @param token     私有仓库访问 Token（如 GitHub PAT），可为 null
      * @return 克隆后的本地路径
      * @throws GitException 带错误码的异常
      */
-    public Path clone(String repoUrl, Path localPath) throws GitException {
+    public Path clone(String repoUrl, Path localPath, String token) throws GitException {
         File targetDir = localPath.toFile();
 
         // 如果目标已存在，先删除（重新导入场景）
@@ -83,10 +85,11 @@ public class GitRepoManager {
                     .setCloneSubmodules(false)
                     .setTimeout(30);  // 30 秒超时
 
-            // TODO: 私有仓库认证（用户标注）
-            // if (credentials != null) {
-            //     cloneCmd.setCredentialsProvider(new UsernamePasswordCredentialsProvider(user, pass));
-            // }
+            // 私有仓库认证：GitHub/Gitee/GitLab Personal Access Token
+            if (token != null && !token.isBlank()) {
+                cloneCmd.setCredentialsProvider(new UsernamePasswordCredentialsProvider(token, ""));
+                log.info("使用 Token 认证克隆私有仓库");
+            }
 
             try (Git ignored = cloneCmd.call()) {
                 log.info("Git clone 完成: {} → temp: {}", repoUrl, tempPath);

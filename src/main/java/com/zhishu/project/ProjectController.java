@@ -46,9 +46,10 @@ public class ProjectController {
      */
     @PostMapping("/import")
     public SseEmitter importProject(@RequestParam String repoUrl,
-                                     @RequestParam(defaultValue = "false") boolean force) {
+                                     @RequestParam(defaultValue = "false") boolean force,
+                                     @RequestParam(required = false) String token) {
         SseEmitter emitter = new SseEmitter(300_000L);  // 5 分钟超时
-        projectImportService.importFromRepo(repoUrl, force, emitter);
+        projectImportService.importFromRepo(repoUrl, force, token, emitter);
         return emitter;
     }
 
@@ -67,7 +68,7 @@ public class ProjectController {
             emitter.complete();
             return emitter;
         }
-        return importProject(repoUrls.get(0), false);
+        return importProject(repoUrls.get(0), false, null);
     }
 
     /**
@@ -88,7 +89,7 @@ public class ProjectController {
             return emitter;
         }
         // 强制重新索引
-        return importProject(repoUrl, true);
+        return importProject(repoUrl, true, null);
     }
 
     private String extractFirstRepoUrl(CodeProject project) {
