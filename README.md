@@ -2,6 +2,7 @@
   <img src="https://img.shields.io/badge/Java-17-blue?logo=openjdk" alt="Java 17">
   <img src="https://img.shields.io/badge/Spring%20Boot-3.2.5-brightgreen?logo=springboot" alt="Spring Boot 3.2.5">
   <img src="https://img.shields.io/badge/Tree--sitter-0.24.4-important" alt="Tree-sitter 0.24.4">
+  <img src="https://img.shields.io/badge/SCIP-1.0.0-blue" alt="SCIP Protocol">
   <img src="https://img.shields.io/badge/Qdrant-1.15.0-blueviolet" alt="Qdrant 1.15.0">
   <img src="https://img.shields.io/badge/LangChain4j-0.36.2-purple" alt="LangChain4j 0.36.2">
   <img src="https://img.shields.io/badge/Neo4j-Embedded-008CC1" alt="Neo4j Embedded">
@@ -11,17 +12,17 @@
 <div align="center">
   <h1>DevKnow</h1>
   <p><strong>开发者双通道知识助手</strong></p>
-  <p>代码通道（AST + ripple 反向索引）| 文档通道（RAG + 层级感知 + 角色感知）| 知识图谱 | 波及重建</p>
+  <p>代码通道（Tree-sitter / SCIP 双模式）| 文档通道（RAG + 层级感知 + 角色感知）| 知识图谱 | 波及重建</p>
 </div>
 
 ---
 
 ## 项目简介
 
-**DevKnow** 是一个面向开发团队的智能知识平台。贴一个 Git 地址，系统自动拉取代码并建立索引，开发者用自然语言提问即可检索代码方法、追溯调用链、查询开发文档。支持**层级感知检索**（L1~L5 知识层级）和**角色感知**（不同角色优先获取匹配层级的文档）。
+**DevKnow** 是一个面向开发团队的智能知识平台。贴一个 Git 地址，系统自动拉取代码并建立索引，开发者用自然语言提问即可检索代码方法、追溯调用链、查询开发文档。支持**双模式代码索引**（Tree-sitter 轻量级 / SCIP 性能级）、**层级感知检索**（L1~L5 知识层级）和**角色感知**（不同角色优先获取匹配层级的文档）。
 
 **双通道架构：**
-- **代码通道**：Tree-sitter AST 解析方法粒度 + JavaEnhancer 类型增强 + ripple 反向索引，精度优先
+- **代码通道**：双模式——Tree-sitter AST 解析（轻量级，默认）或 SCIP 协议索引（性能级，精确符号解析），运行时一键切换
 - **文档通道**：Tika 解析 + TextSplitter 分块 + Embedding 向量化 + ngram 关键词，语义理解优先
 - **层级感知**：LLM 自动分类问题层级（L1 原则/L2 架构/L3 规范/L4 实现/L5 经验），定向检索目标层级
 - **角色感知**：架构师优先 L1~L2、开发者优先 L3~L5，角色主层级匹配提升置信度
@@ -32,10 +33,12 @@
 
 ## 核心特性
 
-### 🔍 代码通道（AST + 反向索引）
+### 🔍 代码通道（双模式：Tree-sitter / SCIP）
 
-- **AST 方法级索引**：Tree-sitter 统一解析 Java/Python/Go/JS/TS，按方法粒度切分
-- **LanguageEnhancer 插件化**：JavaEnhancer 使用 JavaParser 做类型解析，调用链精确到类.方法.参数
+- **双模式架构**：两种互斥模式，运行时通过 API 一键切换，无需重启
+  - **Tree-sitter 模式**（默认）：轻量级，纯 Java 实现，零外部依赖，所有语言通用
+  - **SCIP 模式**（性能级）：读取 SCIP 协议索引文件，精确到类.方法级别的符号解析，跨文件调用链
+- **模式切换流程**：`PUT /api/codeindex/mode` → 检测 index.scip → 不存在则自动调用外部 indexer 生成 → 前端 SSE 阻塞弹窗实时展示进度 → 完成后自动切换
 - **ripple 反向索引**：Redis Set 存储"方法名 → 调用方文件"，波及重建时秒级定位影响范围
 - **精确查询**：`method_name=` 精确查找 + `ngram FULLTEXT` 关键词 + `ripple SMEMBERS` 调用链
 
@@ -80,15 +83,16 @@
 ├──────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
 │  ┌─ 用户入口 ──────────────────────────────────────────────────┐        │
-│  │  导入页 (SSE 进度) | 对话页 (层级感知问答) | 搜索页  | 图谱 │        │
+│  │  导入页 (SSE 进度) | 对话页 (层级感知问答) | 搜索页 | 图谱  │        │
+│  │  模式切换 (Tree-sitter / SCIP 弹窗)                        │        │
 │  └──────────────────────────────────────────────────────────────┘        │
 │                                │                                         │
 │  ┌─ 双通道并行 ─────────────────────────────────────────────────┐        │
-│  │  ┌─────────────┐  ┌────────────────────────────────────┐     │        │
-│  │  │  代码通道    │  │  文档通道（层级感知 + 角色感知）    │     │        │
-│  │  │  AST → Code  │  │  LLM 分类层级 → 角色融合置信度     │     │        │
-│  │  │  → ripple   │  │  → A 路定向 / B 路补刀             │     │        │
-│  │  └─────────────┘  └────────────┬───────────────────────┘     │        │
+│  │  ┌─────────────────────┐  ┌────────────────────────────┐     │        │
+│  │  │  代码通道            │  │  文档通道                  │     │        │
+│  │  │  Tree-sitter / SCIP │  │  层级感知 + 角色感知       │     │        │
+│  │  │  → ripple           │  │  → A 路定向 / B 路补刀    │     │        │
+│  │  └─────────────────────┘  └───────────┬────────────────┘     │        │
 │  └──────────────────────────────────────────────────────────────┘        │
 │                                    │                                     │
 │                                    ▼                                     │
@@ -122,13 +126,13 @@
 |---|---|---|
 | **框架** | Spring Boot 3.2.5, Java 17 | 基础运行时 |
 | **数据层** | Spring Data JPA, MySQL 8 | 持久化 + ngram 全文检索 |
-| **向量数据库** | Qdrant 1.15.0（轻量级 Rust 实现） | 文档/代码向量存储，ANN 搜索，替代 Milvus |
+| **向量数据库** | Qdrant 1.15.0（轻量级 Rust 实现） | 文档/代码向量存储，ANN 搜索 |
 | **图数据库** | Neo4j 5.26.27 Embedded | 知识图谱，嵌入 JVM 无独立容器 |
 | **缓存/会话** | Redis 7 | 聊天记忆、语义缓存、ripple 反向索引、限流 |
 | **消息队列** | RabbitMQ | 文档异步解析 |
 | **对象存储** | MinIO | 文档原文存档 |
-| **代码解析** | Tree-sitter 0.24.4 | 多语言 AST 解析（Java/Python/Go/JS/TS） |
-| **类型增强** | JavaParser 3.26.2 | JavaEnhancer 插件（import 解析、调用链精确） |
+| **代码解析（轻量）** | Tree-sitter 0.24.4 | 默认模式，纯 Java，所有语言通用 |
+| **代码解析（性能）** | SCIP Protocol + protobuf | 可选模式，需外部 indexer，精确符号解析 |
 | **AI 编排** | LangChain4j 0.36.2 | 模型调用、RAG Pipeline、Agent 编排 |
 | **模型协议** | OpenAI 协议 | 兼容 GPT / DeepSeek / 通义 / 智谱等 |
 | **文档解析** | Apache Tika | PDF / Word / Markdown / TXT |
@@ -157,10 +161,9 @@ docker compose up -d
 启动后导入数据库表结构：
 
 ```bash
-mysql -h127.0.0.1 -uroot -proot123 devknow < sql/schema.sql
-mysql -h127.0.0.1 -uroot -proot123 devknow < sql/schema-v2.sql
-# 可选：层级感知 RAG 迁移
-mysql -h127.0.0.1 -uroot -proot123 devknow < sql/migration-v3-level.sql
+mysql -h127.0.0.1 -uroot -proot123 devknow < backend/sql/schema.sql
+mysql -h127.0.0.1 -uroot -proot123 devknow < backend/sql/schema-v2.sql
+mysql -h127.0.0.1 -uroot -proot123 devknow < backend/sql/migration-v3-level.sql
 ```
 
 ### 2. 配置模型 API
@@ -185,7 +188,23 @@ mvn spring-boot:run
 - Neo4j Embedded 初始化（数据持久化到 `data/neo4j/`）
 - 存量文档 LLM 层级分类迁移
 
-### 4. 设置知识角色（可选）
+### 4. 切换代码索引模式（可选）
+
+默认使用 Tree-sitter 模式。切换到 SCIP 模式：
+
+```bash
+# 查看当前模式
+curl http://localhost:8080/api/codeindex/mode
+
+# 切换到 SCIP（如果项目目录下有 index.scip 则立即切换，否则自动生成）
+curl -X PUT http://localhost:8080/api/codeindex/mode \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "scip", "projectDir": "/path/to/project"}'
+
+# 前端也支持：侧边栏底部模式徽章 → 下拉菜单 → 点击 SCIP → 阻塞弹窗
+```
+
+### 5. 设置知识角色（可选）
 
 ```bash
 # 登录获取 token
@@ -200,7 +219,7 @@ curl -X PUT "http://localhost:8080/api/auth/knowledge-role" \
   -d '{"knowledgeRole":"ARCHITECT"}'
 ```
 
-### 5. 导入项目
+### 6. 导入项目
 
 ```bash
 curl -X POST "http://localhost:8080/api/project/import?repoUrl=https://github.com/user/repo.git"
@@ -217,45 +236,72 @@ src/main/java/com/devknow
 ├── auth/                        # 用户认证 + 知识角色 (UserKnowledgeRole)
 ├── chat/                        # 对话主链路（双通道决策 + SSE 流式）
 ├── codeindex/                   # ★ 代码索引核心
-│   ├── CodeParser.java          # Tree-sitter + LanguageEnhancer 编排
-│   ├── CodeUnit.java            # 代码单元模型（双层：基础 + 增强）
+│   ├── CodeParser.java          # 双模式门面（Tree-sitter / SCIP 运行时切换）
+│   ├── CodeIndexMode.java       # 模式枚举
+│   ├── CodeIndexModeService.java # 运行时模式管理 + 异步切换 + SSE 推送
+│   ├── CodeUnit.java            # 代码单元模型
 │   ├── CodeIndexService.java    # 全量索引 + 波及重建
 │   ├── GitRepoManager.java      # Git clone/pull/diff/check
 │   ├── GitHistoryIndexer.java   # commit 遍历 + 故障标记
-│   ├── LanguageEnhancer.java    # 插件接口
-│   ├── LanguageEnhancerRegistry.java
 │   ├── CodeUnitEntity.java      # MySQL code_unit 表实体
 │   ├── CodeUnitEntityRepository.java # 反向调用链查询
 │   ├── tree/                    # Tree-sitter 统一语法解析
-│   └── enhance/java/            # JavaEnhancer 类型解析插件
+│   └── scip/                    # ★ SCIP 索引解析器
+│       ├── ScipCodeParser.java  # 从 index.scip 构建 CodeUnit
+│       ├── ScipParser.java      # 框架占位（旧版）
+│       ├── ScipSymbol.java      # 符号字符串解析
+│       ├── ScipConfig.java      # 配置
+│       └── ScipIndexGenerator.java # 自动调用外部 indexer CLI
 ├── codereview/                  # 代码审查 Agent
 ├── project/                     # ★ 项目管理 + 一键导入
-│   ├── ProjectImportService.java # clone→scan→create→index SSE 编排
-│   ├── ProjectController.java   # /api/project/import + Webhook
-│   ├── ProjectService.java
-│   ├── ProjectContextHolder.java
-│   └── StructureScanner.java    # 自动检测语言/框架/模块
 ├── knowledge/                   # 文档通道 RAG
-│   └── graph/                   # ★ Neo4j 知识图谱（KnowledgeGraphService, GraphExpander）
+│   └── graph/                   # ★ Neo4j 知识图谱
 ├── rag/                         # RAG 检索链路
 │   ├── RagService.java          # 层级感知检索 levelAwareRetrieve()
 │   ├── Reranker.java, RrfFusion.java, MmrSelector.java
 │   └── QueryExpander.java, RagResult.java
-├── vector/                      # ★ Qdrant 向量存储（替代 Milvus）
+├── vector/                      # ★ Qdrant 向量存储
 │   ├── VectorStoreService.java  # searchByLevels 层级过滤
 │   ├── QdrantClientManager.java # 懒加载 gRPC 客户端
 │   └── VectorRecord.java
 ├── config/                      # 配置装配
 │   ├── QdrantConfig.java        # Qdrant 集合初始化
-│   ├── Neo4jConfig.java         # Neo4j Embedded 数据库初始化
+│   ├── Neo4jConfig.java         # Neo4j Embedded 初始化
 │   └── rerank/                  # LevelClassifier, RoleLevelMapper
+├── controller/                  # REST API
+│   ├── GraphController.java     # 知识图谱管理
+│   └── CodeIndexController.java # 模式切换 API + SSE 进度
 ├── cache/                       # 语义缓存
 ├── governance/                  # 治理层（限流/熔断/审计/敏感词）
-├── migration/                   # 存量数据迁移脚本
-├── controller/                  # REST API（含 GraphController 图谱管理）
-├── migration/                   # LevelMigrationRunner 存量层级迁移
+├── migration/                   # LevelMigrationRunner 存量迁移
 └── common/                      # 公共组件
+
+src/main/proto/
+└── scip.proto                   # SCIP 协议 protobuf 定义
+
+frontend/src/
+├── App.vue                      # 侧边栏 + 模式切换下拉菜单
+├── components/
+│   └── ScipModal.vue            # SCIP 模式切换阻塞弹窗（SSE 进度 + 动画）
+├── views/
+│   ├── ChatView.vue             # 对话界面
+│   ├── ImportView.vue           # 项目导入
+│   └── ProjectsView.vue         # 项目列表
+└── api/index.js                 # API 封装（含模式管理）
 ```
+
+---
+
+## 双模式对比
+
+| 特性 | Tree-sitter 模式 | SCIP 模式 |
+|------|-----------------|-----------|
+| **启动依赖** | 无（纯 Java 实现） | 需要安装 scip-java/scip-go 等外部 indexer |
+| **精度** | 方法名级别（语法层） | 类.方法级别（符号层），含类型签名 |
+| **调用链** | 方法名匹配 | 精确符号引用（跨文件） |
+| **首次索引** | 即时，随项目导入自动完成 | 需要运行 indexer 生成 index.scip |
+| **模式切换** | 立即生效 | 可能需要等待索引生成（有阻塞弹窗+进度） |
+| **适用场景** | 快速上手、语言杂的项目 | 追求精度的生产项目 |
 
 ---
 
@@ -288,20 +334,17 @@ src/main/java/com/devknow
 ### 导入链路
 
 ```
-Git clone（临时目录→rename） → StructureScanner 扫描（语言/框架/入口/模块）
-  → 创建项目记录 → 全量索引：
-       对每个文件：Tree-sitter AST → CodeUnit
-       → JavaEnhancer 类型增强
-       → 三写：MySQL code_unit + Qdrant 向量 + Redis ripple
+Git clone → StructureScanner 扫描
+  → Tree-sitter 模式：逐文件 Tree-sitter AST → CodeUnit → 三写
+  → SCIP 模式：读取 index.scip → 提取符号 → 构建 CodeUnit → 三写
   → 保存 HEAD commit hash → 完成
 ```
 
 ### 文档写入链路
 
 ```
-上传文件 → MD5 秒传判断 → MinIO 存原文
-  → RabbitMQ 投递 → Tika 解析文本
-  → TextSplitter 语义分块
+上传文件 → MD5 秒传 → MinIO 存原文
+  → RabbitMQ → Tika 解析 → TextSplitter 分块
   → 逐块向量化 → MySQL 落 chunk + Qdrant 落向量（含 level）
   → Neo4j 创建文档节点 + LLM 自动建关系
 ```
@@ -312,11 +355,10 @@ Git clone（临时目录→rename） → StructureScanner 扫描（语言/框架
 用户提问 + userId
   → 查用户角色（knowledge_role）
   → LLM 层级分类（L1~L5，含置信度）
-  → RoleLevelMapper 融合角色+层级（调整搜索范围和置信度）
+  → RoleLevelMapper 融合角色+层级
   → A 路：Qdrant searchByLevels（payload filter on level）
   → B 路（低置信度时）：全量补刀降权 0.6
-  → MySQL keywordSearchByLevel（JOIN d.level）
-  → RRF 融合 + 规则重排序
+  → MySQL keywordSearchByLevel + RRF 融合 + 重排序
   → Neo4j 知识图谱多跳扩展
   → LLM 生成回答
 ```
