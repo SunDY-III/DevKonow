@@ -379,16 +379,23 @@ public class CodeIndexService {
      * 保存最后一次成功索引的 commit hash（用于下次 diff）。
      */
     private void saveLastIndexedCommit(Long projectId, Path repoPath) {
-        // 通过 GitRepoManager 获取 HEAD hash，但这里不直接依赖 GitRepoManager
-        // 直接用 JGit 获取
         try (org.eclipse.jgit.api.Git git = org.eclipse.jgit.api.Git.open(repoPath.toFile())) {
             var commits = git.log().setMaxCount(1).call();
             if (commits.iterator().hasNext()) {
-                String hash = commits.iterator().next().getName();
+                var commit = commits.iterator().next();
+                String hash = commit.getName();
+                long timestamp = commit.getCommitTime() * 1000L;  // JGit 用秒，转毫秒
+
+                // commit hash（用于正常 diff）
                 redis.opsForValue().set("index:commit:" + projectId, hash);
+                // 时间戳（用于 force push 后基于时间的 diff 降级）
+                redis.opsForValue().set("index:timestamp:" + projectId, String.valueOf(timestamp));
+
+                log.debug("已保存索引点: projectId={}, commit={}, time={}",
+                        projectId, hash.substring(0, 8), timestamp);
             }
         } catch (Exception e) {
-            log.warn("保存 indexed commit hash 失败: projectId={}", projectId);
+            log.warn("保存索引点失败: projectId={}", projectId);
         }
     }
 

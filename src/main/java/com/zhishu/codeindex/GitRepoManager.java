@@ -400,6 +400,66 @@ public class GitRepoManager {
         return changedFiles;
     }
 
+    /**
+     * 基于时间戳的变更检测（force push 降级方案）。
+     * 不依赖 commit hash，使用 git log --since 查找新提交涉及的变更文件。
+     * 当 {@link #diffChangedFiles} 因 force push 导致 commit 找不到时使用此方法。
+     *
+     * @param repoPath     仓库路径
+     * @param sinceEpochMs 起始时间戳（毫秒）
+     * @return 变更文件列表
+     */
+    public List<String> diffSinceTimestamp(Path repoPath, long sinceEpochMs) {
+        List<String> changedFiles = new ArrayList<>();
+        try (Git git = Git.open(repoPath.toFile());
+             RevWalk revWalk = new RevWalk(git.getRepository())) {
+
+            ObjectId headId = git.getRepository().resolve("HEAD");
+            if (headId == null) return changedFiles;
+
+            RevCommit headCommit = revWalk.parseCommit(headId);
+            long sinceSeconds = sinceEpochMs / 1000;
+
+            // RevWalk 按时间降序遍历
+            revWalk.markStart(headCommit);
+            for (RevCommit commit : revWalk) {
+                if (commit.getCommitTime() < sinceSeconds) break;
+
+                if (commit.getParentCount() > 0) {
+                    try (DiffFormatter df = new DiffFormatter(DisabledOutputStream.INSTANCE)) {
+                        df.setRepository(git.getRepository());
+                        df.setDetectRenames(true);
+                        List<DiffEntry> diffs = df.scan(
+                                prepareTreeParser(git.getRepository(), commit.getParent(0)),
+                                prepareTreeParser(git.getRepository(), commit)
+                        );
+                        for (DiffEntry diff : diffs) {
+                            String path = diff.getNewPath();
+                            if (!"/dev/null".equals(path) && !changedFiles.contains(path)) {
+                                changedFiles.add(path);
+                            }
+                        }
+                    }
+                } else {
+                    // 首次提交：列出所有文件
+                    try (var walk = Files.walk(repoPath)) {
+                        walk.filter(Files::isRegularFile)
+                                .map(p -> repoPath.relativize(p).toString().replace('\\', '/'))
+                                .forEach(changedFiles::add);
+                    }
+                }
+            }
+
+            log.info("Git diff (timestamp): since={}, changedFiles={}",
+                    new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm").format(new java.util.Date(sinceEpochMs)),
+                    changedFiles.size());
+
+        } catch (Exception e) {
+            log.warn("Git diff (timestamp) 失败: {}", repoPath, e);
+        }
+        return changedFiles;
+    }
+
     private AbstractTreeIterator prepareTreeParser(Repository repository, RevCommit commit) throws Exception {
         RevWalk walk = new RevWalk(repository);
         try {

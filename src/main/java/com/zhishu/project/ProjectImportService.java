@@ -209,6 +209,16 @@ public class ProjectImportService {
             } else {
                 sendProgress(emitter, closed, "diffing", "检测变更...", 35);
                 List<String> changedFiles = gitRepoManager.diffChangedFiles(localPath, lastCommit);
+
+                // commit hash diff 失败（force push）→ 尝试时间戳降级
+                if (changedFiles.isEmpty()) {
+                    String ts = redis.opsForValue().get("index:timestamp:" + projectId);
+                    if (ts != null) {
+                        log.warn("commit diff 为空，尝试时间戳降级: projectId={}", projectId);
+                        changedFiles = gitRepoManager.diffSinceTimestamp(localPath, Long.parseLong(ts));
+                    }
+                }
+
                 sendProgress(emitter, closed, "diffed", String.format("检测到 %d 个变更", changedFiles.size()), 45);
                 sendProgress(emitter, closed, "indexing", "波及重建...", 55);
                 codeIndexService.indexIncremental(projectId, repoName, localPath, changedFiles);
