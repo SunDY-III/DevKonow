@@ -51,6 +51,9 @@ public class GitRepoManager {
     @Value("${app.code-index.repo-dir:/data/repos}")
     private String repoBaseDir;
 
+    @Value("${app.code-index.max-repo-size-mb:500}")
+    private int maxRepoSizeMb;
+
     /**
      * 克隆仓库到本地（先写临时目录，成功后 rename）。
      * 防止 clone 中途中断留下不完整目录。
@@ -99,6 +102,16 @@ public class GitRepoManager {
             // 成功 → rename 临时目录为目标目录
             Files.move(tempPath, localPath, StandardCopyOption.ATOMIC_MOVE);
             log.info("Git clone rename 完成: {} → {}", tempPath, localPath);
+
+            // 检查仓库大小（超过限制时清理并报错）
+            long sizeMb = calculateSizeMb(localPath);
+            if (sizeMb > maxRepoSizeMb) {
+                deleteDirectory(localPath.toFile());
+                throw new GitException(GitException.ErrorCode.REPO_TOO_LARGE,
+                        String.format("仓库大小 %dMB 超过限制 %dMB，请选择更轻量的仓库或联系管理员调整限制",
+                                sizeMb, maxRepoSizeMb));
+            }
+            log.info("仓库大小: {}MB (上限: {}MB)", sizeMb, maxRepoSizeMb);
 
             return localPath;
 
@@ -163,6 +176,29 @@ public class GitRepoManager {
             return url.substring(idx + 1);
         }
         return url;
+    }
+
+    /**
+     * 计算仓库目录的总大小（MB）。
+     * 遍历所有文件求和，跳过无法访问的文件。
+     */
+    public static long calculateSizeMb(Path repoPath) {
+        if (repoPath == null || !repoPath.toFile().exists()) return 0;
+        try {
+            long totalBytes;
+            try (var stream = java.nio.file.Files.walk(repoPath)) {
+                totalBytes = stream.filter(java.nio.file.Files::isRegularFile)
+                        .mapToLong(f -> {
+                            try { return java.nio.file.Files.size(f); }
+                            catch (java.io.IOException e) { return 0; }
+                        })
+                        .sum();
+            }
+            return totalBytes / (1024 * 1024);
+        } catch (java.io.IOException e) {
+            log.warn("计算仓库大小失败: {}", repoPath, e);
+            return 0;
+        }
     }
 
     // ======================== 重新索引 ========================
