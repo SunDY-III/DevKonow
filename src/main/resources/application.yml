@@ -108,3 +108,10 @@ resilience4j:
         failure-rate-threshold: 50         # 失败率 >= 50% 熔断打开
         wait-duration-in-open-state: 30s   # 打开 30s 后进入半开试探
         permitted-number-of-calls-in-half-open-state: 2
+
+# Milvus 向量数据库配置
+milvus:
+  host: ${MILVUS_HOST:localhost}
+  port: ${MILVUS_PORT:19530}
+  collection: ${MILVUS_COLLECTION:devknow_vectors}
+  dimension: ${MILVUS_DIMENSION:1536}      # text-embedding-3-small 默认为 1536

@@ -29,6 +29,17 @@ services:
     volumes:
       - minio-data:/data
 
+  milvus:
+    image: milvusdb/milvus:v2.5.5
+    command: milvus run standalone
+    environment:
+      ETCD_USE_EMBED: "true"
+      MINIO_USE_EMBED: "true"
+    ports: ["19530:19530"]
+    volumes:
+      - milvus-data:/var/lib/milvus
+
 volumes:
   mysql-data:
   minio-data:
+  milvus-data:
