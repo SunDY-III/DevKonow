@@ -3,6 +3,7 @@ package com.devknow.knowledge;
 import com.rabbitmq.client.Channel;
 import com.devknow.config.RabbitConfig;
 import com.devknow.governance.TokenAuditService;
+import com.devknow.knowledge.graph.KnowledgeGraphService;
 import com.devknow.vector.VectorRecord;
 import com.devknow.vector.VectorStoreService;
 import dev.langchain4j.model.embedding.EmbeddingModel;
@@ -40,6 +41,7 @@ public class DocumentParseListener {
     private final MinioClient minioClient;
     private final StringRedisTemplate redis;
     private final TokenAuditService tokenAuditService;
+    private final KnowledgeGraphService graphService;
     private final Tika tika = new Tika();
 
     @Value("${minio.bucket}")
@@ -99,7 +101,8 @@ public class DocumentParseListener {
             float[] vector = embeddingModel.embed(content).content().vector();
             tokenAuditService.record(doc.getUserId(), "EMBEDDING", content.length() / 2, 0);  // 估算
             vectorStoreService.save(new VectorRecord(
-                    doc.getId(), doc.getVersion(), chunk.getId(), i, doc.getFileName(), content, vector));
+                    doc.getId(), doc.getVersion(), chunk.getId(), i, doc.getFileName(), content, vector,
+                    doc.getLevel()));
 
             setProgress(doc.getId(), 30 + (int) (70.0 * (i + 1) / chunks.size()));
         }
@@ -107,8 +110,20 @@ public class DocumentParseListener {
         doc.setStatus("READY");
         doc.setChunkCount(chunks.size());
         docRepository.save(doc);
+
+        // 同步到 Neo4j 知识图谱
+        try {
+            int level = doc.getLevel() != null ? doc.getLevel() : 0;
+            graphService.createOrUpdateNode(doc.getId(), doc.getFileName(), level, "");
+            // 取第一个 chunk 作为摘要，用于 LLM 自动建关系
+            String contentPreview = chunks.isEmpty() ? "" : chunks.get(0);
+            graphService.autoBuildRelations(doc.getId(), doc.getFileName(), contentPreview);
+        } catch (Exception e) {
+            log.warn("知识图谱同步失败（docId={}），不影响主流程: {}", doc.getId(), e.getMessage());
+        }
+
         setProgress(doc.getId(), 100);
-        log.info("doc parsed: id={}, chunks={}", doc.getId(), chunks.size());
+        log.info("doc parsed: id={}, chunks={}, neo4j=synced", doc.getId(), chunks.size());
     }
 
     private void setProgress(Long docId, int progress) {

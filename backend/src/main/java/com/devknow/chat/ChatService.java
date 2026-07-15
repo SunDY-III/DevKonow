@@ -143,7 +143,7 @@ public class ChatService {
     private void handleDocRoute(Long userId, String conversationId, String question,
                                  float[] queryVector, SseEmitter emitter, AtomicBoolean closed) {
         try {
-            RagResult rag = ragService.retrieve(userId, question);
+            RagResult rag = ragService.levelAwareRetrieve(userId, question);
             if (rag.getConfidence() >= confidenceThreshold) {
                 llmStreamingService.generateWithFallback(userId, conversationId, question, rag, emitter, closed, queryVector);
             } else {

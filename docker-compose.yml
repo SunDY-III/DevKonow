@@ -29,26 +29,15 @@ services:
     volumes:
       - minio-data:/data
 
-  milvus:
-    image: milvusdb/milvus:v2.5.5
-    command: milvus run standalone
-    environment:
-      ETCD_USE_EMBED: "true"
-      GOGC: "200"                            # 降低 GC 频率，减少 CPU 开销
-      GOMEMLIMIT: "2048"                     # Go 软内存限制（MiB）
-      CACHE_SIZE: "1024"                     # Milvus 缓存大小（MB），默认 4096
-      MQ_TYPE: "local"                       # 使用本地消息队列，不额外占用资源
-    ports: ["19530:19530"]
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
     volumes:
-      - milvus-data:/var/lib/milvus
-    deploy:
-      resources:
-        limits:
-          memory: 3g
-        reservations:
-          memory: 1g
+      - qdrant-data:/qdrant/storage
 
 volumes:
   mysql-data:
   minio-data:
-  milvus-data:
+  qdrant-data:

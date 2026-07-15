@@ -15,6 +15,7 @@ public class User {
     private String username;
     private String password;
     private String role;            // USER / HANDLER / ADMIN
+    private String knowledgeRole;    // 知识职责角色: ARCHITECT / DEVELOPER / QA / DEVOPS / PM / UNSPECIFIED
     @Column(insertable = false, updatable = false)
     private LocalDateTime createdAt;
 }

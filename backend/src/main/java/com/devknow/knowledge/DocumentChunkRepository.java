@@ -6,21 +6,35 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.util.List;
+import java.util.Optional;
 
 public interface DocumentChunkRepository extends JpaRepository<DocumentChunk, Long> {
 
     /**
      * 关键词召回通道：MySQL ngram 全文索引。
-     * 纯向量检索对编号、专有名词（如“工单号 TK20260612001”“ERR-1042”）召回差，
-     * 用关键词检索补位，再与向量结果做 RRF 融合 —— 混合检索的核心动机。
      */
-    @Query(value = """
-            SELECT c.* FROM document_chunk c
-            JOIN knowledge_document d ON d.id = c.doc_id AND d.deleted = 0 AND d.version = c.doc_version
-            WHERE MATCH(c.content) AGAINST(:query IN NATURAL LANGUAGE MODE)
-            LIMIT :topK
-            """, nativeQuery = true)
+    @Query(value = "SELECT c.* FROM document_chunk c " +
+            "JOIN knowledge_document d ON d.id = c.doc_id AND d.deleted = 0 AND d.version = c.doc_version " +
+            "WHERE MATCH(c.content) AGAINST(:query IN NATURAL LANGUAGE MODE) " +
+            "LIMIT :topK", nativeQuery = true)
     List<DocumentChunk> keywordSearch(@Param("query") String query, @Param("topK") int topK);
+
+    /**
+     * 带层级过滤的关键词检索（层级感知 RAG 用）。
+     */
+    @Query(value = "SELECT c.* FROM document_chunk c " +
+            "JOIN knowledge_document d ON d.id = c.doc_id AND d.deleted = 0 AND d.version = c.doc_version " +
+            "WHERE d.level IN (:levels) " +
+            "AND MATCH(c.content) AGAINST(:query IN NATURAL LANGUAGE MODE) " +
+            "LIMIT :topK", nativeQuery = true)
+    List<DocumentChunk> keywordSearchByLevel(@Param("query") String query,
+                                              @Param("levels") List<Integer> levels,
+                                              @Param("topK") int topK);
+
+    /**
+     * 取文档的第一个 chunk（用于图谱扩展时获取关联文档的摘要片段）。
+     */
+    Optional<DocumentChunk> findFirstByDocIdOrderBySeqAsc(Long docId);
 
     @Modifying
     @Query("delete from DocumentChunk c where c.docId = :docId")

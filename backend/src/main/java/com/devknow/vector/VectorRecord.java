@@ -17,4 +17,5 @@ public class VectorRecord {
     private String fileName;
     private String content;
     private float[] vector;
+    private Integer level;       // 知识层级（文档级，用于 Qdrant filter 检索）
 }

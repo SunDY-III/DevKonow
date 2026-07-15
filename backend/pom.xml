@@ -161,17 +161,30 @@
             <version>6.9.0.202403050737-r</version>
         </dependency>
 
-        <!-- Milvus 向量数据库 -->
+        <!-- Qdrant 向量数据库（轻量级，Rust 实现） -->
         <dependency>
-            <groupId>io.milvus</groupId>
-            <artifactId>milvus-sdk-java</artifactId>
-            <version>2.5.5</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.slf4j</groupId>
-                    <artifactId>slf4j-api</artifactId>
-                </exclusion>
-            </exclusions>
+            <groupId>io.qdrant</groupId>
+            <artifactId>client</artifactId>
+            <version>1.15.0</version>
+        </dependency>
+        <!-- Qdrant 客户端标记 protobuf 为 runtime scope，但我们的代码直接引用 protobuf 类型 -->
+        <dependency>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+            <version>3.25.1</version>
+        </dependency>
+        <!-- 同样 Qdrant 的 gRPC 依赖为 runtime scope，需要显式编译依赖 -->
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-api</artifactId>
+            <version>1.65.1</version>
+        </dependency>
+
+        <!-- Neo4j Embedded 图数据库（嵌入 JVM，零外部进程） -->
+        <dependency>
+            <groupId>org.neo4j</groupId>
+            <artifactId>neo4j</artifactId>
+            <version>5.26.27</version>
         </dependency>
 
         <dependency>

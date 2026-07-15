@@ -1,7 +1,15 @@
 package com.devknow.rag;
 
+import com.devknow.auth.RoleLevelMapper;
+import com.devknow.auth.User;
+import com.devknow.auth.UserKnowledgeRole;
+import com.devknow.auth.UserRepository;
+import com.devknow.config.rerank.LevelClassifier;
+import com.devknow.config.rerank.LevelResult;
 import com.devknow.governance.TokenAuditService;
+import com.devknow.knowledge.DocumentChunk;
 import com.devknow.knowledge.DocumentChunkRepository;
+import com.devknow.knowledge.graph.GraphExpander;
 import com.devknow.vector.ScoredChunk;
 import com.devknow.vector.VectorStoreService;
 import dev.langchain4j.model.embedding.EmbeddingModel;
@@ -10,7 +18,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * RAG 读链路：混合检索（向量 + 关键词）-> RRF 融合 -> 重排序 TopN。
@@ -27,6 +37,10 @@ public class RagService {
     private final DocumentChunkRepository chunkRepository;
     private final Reranker reranker;
     private final TokenAuditService tokenAuditService;
+    private final GraphExpander graphExpander;
+    private final LevelClassifier levelClassifier;
+    private final RoleLevelMapper roleLevelMapper;
+    private final UserRepository userRepository;
 
     @Value("${app.rag.vector-top-k}")  private int vectorTopK;
     @Value("${app.rag.keyword-top-k}") private int keywordTopK;
@@ -116,5 +130,92 @@ public class RagService {
               .append(c.getContent()).append("\n\n");
         }
         return sb.toString();
+    }
+
+    // ==================== 层级感知检索（A+B 混合） ====================
+
+    public RagResult levelAwareRetrieve(Long userId, String question) {
+        // 步骤 1: 获取用户角色
+        UserKnowledgeRole userRole = getUserKnowledgeRole(userId);
+
+        // 步骤 2: LLM 层级分类
+        LevelResult levelResult = levelClassifier.classify(question);
+        int targetLevel = levelResult.getLevel();
+        double llmConfidence = levelResult.getConfidence();
+
+        // 步骤 3: 角色融合（角色调整层级范围 + 置信度）
+        RoleLevelMapper.AdjustedPlan plan = roleLevelMapper.adjust(userRole, targetLevel, llmConfidence);
+        int[] searchLevels = plan.getSearchLevels();
+        double confidence = plan.getAdjustedConfidence();
+        boolean needRouteB = plan.isNeedRouteB();
+
+        // 步骤 4: 向量搜索
+        float[] queryVector = embed(userId, question);
+        List<ScoredChunk> vectorHits = vectorStoreService.searchByLevels(queryVector, vectorTopK, searchLevels);
+
+        // 步骤 4-B: 角色补刀（needRouteB 时用 LLM 原生层级搜索降权插入）
+        if (needRouteB) {
+            List<ScoredChunk> backupHits = vectorStoreService.searchByLevels(queryVector, vectorTopK,
+                    new int[]{targetLevel});
+            for (ScoredChunk c : backupHits) {
+                c.setScore(c.getScore() * 0.6);
+            }
+            vectorHits.addAll(backupHits);
+        }
+
+        // 步骤 5: 关键词搜索
+        List<Integer> levelList = new ArrayList<>();
+        for (int l : searchLevels) levelList.add(l);
+        List<DocumentChunk> kwRaw = chunkRepository.keywordSearchByLevel(question, levelList, keywordTopK);
+        List<ScoredChunk> keywordHits = kwRaw.stream()
+                .map(c -> new ScoredChunk(c.getId(), c.getDocId(), c.getSeq(), "", c.getContent(), 0.0))
+                .toList();
+
+        // 步骤 6: RRF 融合 + 重排序 + 图谱扩展
+        List<ScoredChunk> fused = RrfFusion.fuse(vectorHits, keywordHits, rrfK);
+        List<ScoredChunk> topN = reranker.rerank(question, fused, rerankTopN);
+        List<ScoredChunk> expanded = graphExpander.expand(topN, 3, 2);
+
+        log.info("levelAwareRetrieve: q={}, role={}, level={}, conf={}, searchLvs={}, B={}, expanded={}",
+                question, userRole, targetLevel, String.format("%.2f", confidence),
+                searchLevels.length, needRouteB, expanded.size() - topN.size());
+
+        return new RagResult(expanded, confidence);
+    }
+
+    /** 获取用户的知识角色，查不到返回 UNSPECIFIED */
+    private UserKnowledgeRole getUserKnowledgeRole(Long userId) {
+        if (userId == null) return UserKnowledgeRole.UNSPECIFIED;
+        try {
+            Optional<User> user = userRepository.findById(userId);
+            if (user.isPresent() && user.get().getKnowledgeRole() != null) {
+                String roleStr = user.get().getKnowledgeRole();
+                if (!roleStr.isEmpty()) {
+                    try {
+                        return UserKnowledgeRole.valueOf(roleStr);
+                    } catch (IllegalArgumentException ignored) {}
+                }
+            }
+        } catch (Exception e) {
+            log.warn("获取用户角色失败（userId={}）: {}", userId, e.getMessage());
+        }
+        return UserKnowledgeRole.UNSPECIFIED;
+    }
+
+    private int[] expandRange(int center, int offset) {
+        int low = Math.max(1, center - offset);
+        int high = Math.min(5, center + offset);
+        int[] range = new int[high - low + 1];
+        for (int i = 0; i < range.length; i++) range[i] = low + i;
+        return range;
+    }
+
+    public List<ScoredChunk> testGraphExpand(int topK, int maxExtra, int hops) {
+        List<DocumentChunk> docChunks = chunkRepository.findAll();
+        if (docChunks.isEmpty()) return List.of();
+        List<ScoredChunk> hits = docChunks.stream().limit(topK)
+                .map(c -> new ScoredChunk(c.getId(), c.getDocId(), c.getSeq(), "", c.getContent(), 1.0))
+                .toList();
+        return graphExpander.expand(new ArrayList<>(hits), maxExtra, hops);
     }
 }
