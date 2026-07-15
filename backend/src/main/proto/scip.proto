@@ -1,0 +1,73 @@
+syntax = "proto3";
+package scip;
+
+option java_package = "com.devknow.codeindex.scip.proto";
+option java_multiple_files = true;
+
+// Index is the top-level message of a SCIP index file.
+message Index {
+  repeated Document documents = 1;
+}
+
+// Document defines the symbols and occurrences for a single source file.
+message Document {
+  // The relative path of the source file.
+  string relative_path = 1;
+
+  // Occurrences in this document.
+  repeated Occurrence occurrences = 3;
+
+  // Symbol information for symbols defined in this document.
+  repeated SymbolInformation symbols = 4;
+}
+
+// Occurrence represents a symbol occurrence in the source file.
+message Occurrence {
+  // The SCIP symbol string that this occurrence references.
+  string symbol = 1;
+
+  // Byte-range of the occurrence [start, end).
+  bytes range = 3;
+
+  // Role of the occurrence (definition vs reference).
+  int32 symbol_roles = 4;
+}
+
+// SymbolInformation contains metadata about a symbol.
+message SymbolInformation {
+  // The SCIP symbol string.
+  string symbol = 1;
+
+  // The kind of symbol (method, class, field, etc.).
+  SymbolKind kind = 2;
+
+  // The signature/documentation of the symbol.
+  Signature signature = 5;
+}
+
+enum SymbolKind {
+  UnspecifiedKind = 0;
+  Method = 6;
+  Function = 7;
+  Constructor = 8;
+  Class = 4;
+  Interface = 11;
+  Field = 14;
+  Parameter = 19;
+  Variable = 20;
+}
+
+// Signature contains type information for a symbol.
+message Signature {
+  // Documentation/comment text.
+  string documentation = 1;
+
+  // Method parameter names.
+  repeated string method_parameter_names = 3;
+
+  // Method parameter types.
+  repeated string method_parameter_types = 4;
+
+  // Method return type.
+  string method_return_type = 5;
+}

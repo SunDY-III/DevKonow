@@ -11,12 +11,12 @@ import java.util.List;
  * 代码单元模型。
  *
  * <p>粒度：一个方法/函数 = 一个 CodeUnit。
- * 由 {@link TreeSitterParser} 提取基础信息，{@link LanguageEnhancer} 补充增强信息。
+ * 由 {@link TreeSitterParser} 提取基础信息，可选由 SCIP 做符号增强。
  *
  * <p>两个层次的数据：
  * <ul>
  *   <li>基础层（Tree-sitter 提取）：方法名 / 签名 / 注释 / 行号 / 方法体 / 调用的方法名列表</li>
- *   <li>增强层（LanguageEnhancer 补偿）：精确调用链（类.方法）/ 类型全名 / 注解</li>
+ *   <li>增强层（SCIP 可选）：精确类型签名 / 跨文件符号引用</li>
  * </ul>
  */
 @Data
@@ -71,16 +71,16 @@ public class CodeUnit {
     /**
      * Tree-sitter 提取的调用列表（方法名级别）。
      * 如 ["validate", "pay", "info"]。
-     * 在 JavaEnhancer 未启用时作为 fallback。
+     * SCIP 启用时 enrichedCalls 替代此字段。
      */
     private List<String> calls;
 
-    // ==================== 增强层（LanguageEnhancer 补充） ====================
+    // ==================== 增强层（SCIP 可选补充） ====================
 
     /**
-     * 增强后的精确调用链（类.方法级别）。
-     * 如 ["OrderValidator.validate(CreateReq)", "PaymentService.pay(Long)", "LogUtil.info(String)"]。
-     * 由 JavaEnhancer（JavaParser 类型解析）填充。
+     * SCIP 增强后的精确调用链（类.方法级别）。
+     * 如 ["OrderValidator.validate(CreateReq)", "PaymentService.pay(Long)"]。
+     * Tree-sitter 基础解析时为空，SCIP 索引可用时填充。
      */
     private List<String> enrichedCalls;
 
@@ -92,7 +92,6 @@ public class CodeUnit {
 
     /**
      * 注解列表（字符串级别，如 ["@Override", "@Transactional"]）。
-     * 基础层 Tree-sitter 可提取注解名，增强层 JavaEnhancer 可解析全名。
      */
     private List<String> annotations;
 }

@@ -99,6 +99,11 @@ app:
     window-seconds: 60
   agent:
     max-tool-rounds: 6        # Agent 最大推理轮次，防死循环烧 Token
+  codeindex:
+    mode: tree-sitter         # tree-sitter（轻量级）| scip（性能级，需 index.scip）
+    scip:
+      enabled: false          # SCIP 模式开关（mode=scip 时自动启用）
+      index-file: index.scip  # SCIP 索引文件名
 
 resilience4j:
   circuitbreaker:

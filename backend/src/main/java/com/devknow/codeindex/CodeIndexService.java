@@ -17,6 +17,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -81,30 +82,41 @@ public class CodeIndexService {
             // 清空旧数据（防重复导入导致半截脏数据）
             clearProjectData(projectId);
 
+            // SCIP 模式：一次性解析整个项目的 index.scip
+            Map<String, List<CodeUnit>> scipUnits = codeParser.parseProject(repoPath.toString());
+
             for (Path file : sourceFiles) {
                 if (closed != null && closed.get()) {
                     log.warn("全量索引被中断: projectId={}", projectId);
                     break;
                 }
                 try {
-                    String source = Files.readString(file, StandardCharsets.UTF_8);
-                    if (source.isBlank() || source.length() > 500_000) continue;
-
                     String filePath = repoPath.relativize(file).toString().replace('\\', '/');
-                    String ext = getExtension(filePath);
-                    String language = ext;
 
-                    List<CodeUnit> units = codeParser.parse(filePath, source, language);
-                    if (units.isEmpty()) continue;
-
-                    for (CodeUnit unit : units) {
-                        unit.setProjectId(projectId);
-                        unit.setRepoName(repoName);
-                        saveCodeUnit(projectId, unit);  // MySQL + Redis + ripple
+                    if (codeParser.getMode() == CodeIndexMode.SCIP) {
+                        List<CodeUnit> units = scipUnits.get(filePath);
+                        if (units == null || units.isEmpty()) continue;
+                        for (CodeUnit unit : units) {
+                            unit.setProjectId(projectId);
+                            unit.setRepoName(repoName);
+                            saveCodeUnit(projectId, unit);
+                        }
+                        totalMethods += units.size();
+                        fileCount++;
+                    } else {
+                        String source = Files.readString(file, StandardCharsets.UTF_8);
+                        if (source.isBlank() || source.length() > 500_000) continue;
+                        String ext = getExtension(filePath);
+                        List<CodeUnit> units = codeParser.parse(filePath, source, ext);
+                        if (units.isEmpty()) continue;
+                        for (CodeUnit unit : units) {
+                            unit.setProjectId(projectId);
+                            unit.setRepoName(repoName);
+                            saveCodeUnit(projectId, unit);
+                        }
+                        totalMethods += units.size();
+                        fileCount++;
                     }
-
-                    totalMethods += units.size();
-                    fileCount++;
 
                     if (emitter != null && fileCount % 10 == 0) {
                         sendProgress(emitter, closed, String.format(

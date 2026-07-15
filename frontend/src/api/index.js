@@ -43,3 +43,20 @@ export function reindexProject(id) {
 export function checkNewCommits(id) {
   return request(`/project/${id}/reindex/check`)
 }
+
+// ================== 代码索引模式管理 ==================
+
+export function getCodeIndexMode() {
+  return request('/codeindex/mode')
+}
+
+export function switchCodeIndexMode(mode, projectDir) {
+  return request('/codeindex/mode', {
+    method: 'PUT',
+    body: JSON.stringify({ mode, projectDir })
+  })
+}
+
+export function subscribeCodeIndexProgress() {
+  return new EventSource('/api/codeindex/mode/progress')
+}

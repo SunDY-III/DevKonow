@@ -14,7 +14,7 @@ public class LanguageMapping {
 
     /**
      * 语言标识 → Tree-sitter Language 类名（全限定）。
-     * key 为小写语言名，与文件后缀和 {@link com.zhishu.codeindex.LanguageEnhancer#supportedLanguage()} 一致。
+     * key 为小写语言名，与文件后缀对应。
      */
     public static final Map<String, String> LANGUAGE_CLASSES = Map.of(
             "java", "org.treesitter.TreeSitterJava",

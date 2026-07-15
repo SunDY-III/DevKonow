@@ -1,51 +1,54 @@
 package com.devknow.codeindex;
 
+import com.devknow.codeindex.scip.ScipCodeParser;
 import com.devknow.codeindex.tree.LanguageMapping;
 import com.devknow.codeindex.tree.TreeSitterParser;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
- * 代码解析器入口。
+ * 代码解析器入口（运行时双模式切换）。
  *
- * <p>分层架构（面试点）：
- * <ol>
- *   <li>Tree-sitter 基础解析（语法级，所有语言统一）
- *       → 提取：方法名 / 签名 / 注释 / 行号 / 方法体 / 调用的方法名</li>
- *   <li>LanguageEnhancer 精度补偿（可选，按语言注册）
- *       → Java：JavaParser 类型解析 → 精确到类.方法级别的调用链</li>
- *   <li>无插件的语言天然降级到 Tree-sitter 语法级结果</li>
- * </ol>
- *
- * <p>使用示例：
- * <pre>{@code
- * List<CodeUnit> units = codeParser.parse("OrderService.java", sourceCode, "java");
- * // Java 文件 → units 中的 enrichedCalls 为类.方法级别（JavaEnhancer 补偿）
- *
- * List<CodeUnit> units2 = codeParser.parse("main.go", sourceCode, "go");
- * // Go 文件（无 enhancer）→ units2 中的 calls 为方法名级别
- * }</pre>
+ * <p>模式通过 {@link CodeIndexModeService} 动态切换，无需重启。
+ * <ul>
+ *   <li><b>tree-sitter</b>（默认）：轻量级，零外部依赖</li>
+ *   <li><b>scip</b>：性能级，需要 index.scip</li>
+ * </ul>
+ * 两种模式互斥，同时只运行一个。
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class CodeParser {
 
     private final TreeSitterParser treeSitterParser;
-    private final LanguageEnhancerRegistry enhancerRegistry;
+    private final ScipCodeParser scipParser;
+    private final CodeIndexModeService modeService;
+
+    public CodeParser(TreeSitterParser treeSitterParser, ScipCodeParser scipParser,
+                      CodeIndexModeService modeService) {
+        this.treeSitterParser = treeSitterParser;
+        this.scipParser = scipParser;
+        this.modeService = modeService;
+        log.info("CodeParser 初始化: mode={}（运行时动态切换）", modeService.getCurrentMode());
+    }
+
+    public CodeIndexMode getMode() {
+        return modeService.getCurrentMode();
+    }
 
     /**
-     * 解析单个源码文件，返回方法粒度的 CodeUnit 列表。
-     *
-     * @param filePath 源码文件路径
-     * @param source   源码文本
-     * @param language 语言标识（如 "java"、"go"），为 null 时尝试从文件后缀检测
-     * @return CodeUnit 列表
+     * Tree-sitter 模式：解析单个源码文件。
+     * SCIP 模式下返回空列表（请使用 {@link #parseProject(String)}）。
      */
     public List<CodeUnit> parse(String filePath, String source, String language) {
+        if (modeService.getCurrentMode() == CodeIndexMode.SCIP) {
+            return List.of();
+        }
+
         if (language == null || language.isBlank()) {
             language = LanguageMapping.detectLanguage(filePath);
         }
@@ -54,29 +57,34 @@ public class CodeParser {
             return List.of();
         }
 
-        // ========== 第 1 层：Tree-sitter 基础解析 ==========
-        List<CodeUnit> basicUnits = treeSitterParser.parse(filePath, source, language);
-        if (basicUnits.isEmpty()) {
-            return List.of();
+        List<CodeUnit> units = treeSitterParser.parse(filePath, source, language);
+        if (!units.isEmpty()) {
+            log.debug("CodeParser [tree-sitter]: {} ({}): {} methods", filePath, language, units.size());
+        }
+        return units;
+    }
+
+    /**
+     * SCIP 模式：从 index.scip 解析整个项目。
+     * Tree-sitter 模式下返回空映射。
+     */
+    public Map<String, List<CodeUnit>> parseProject(String projectDir) {
+        if (modeService.getCurrentMode() == CodeIndexMode.TREE_SITTER) {
+            return Map.of();
         }
 
-        // ========== 第 2 层：LanguageEnhancer 精度补偿 ==========
-        LanguageEnhancer enhancer = enhancerRegistry.get(language);
-        if (enhancer != null) {
-            try {
-                List<CodeUnit> enhanced = enhancer.enhance(filePath, basicUnits);
-                log.debug("CodeParser: {} ({}): {} methods, enhanced by {}", filePath, language,
-                        enhanced.size(), enhancer.getClass().getSimpleName());
-                return enhanced;
-            } catch (Exception e) {
-                log.warn("LanguageEnhancer 执行失败: {} ({}), 降级到 Tree-sitter 基础结果",
-                        filePath, language, e);
-                return basicUnits;
-            }
+        // 记录项目目录（用于 SCIP 索引生成）
+        modeService.setCurrentProjectDir(projectDir);
+
+        log.info("CodeParser [scip]: 解析项目索引: {}", projectDir);
+        List<CodeUnit> allUnits = scipParser.parseProject(projectDir);
+
+        Map<String, List<CodeUnit>> byFile = new HashMap<>();
+        for (CodeUnit unit : allUnits) {
+            byFile.computeIfAbsent(unit.getFilePath(), k -> new java.util.ArrayList<>()).add(unit);
         }
 
-        // 无 enhancer → 直接返回 Tree-sitter 基础结果
-        log.debug("CodeParser: {} ({}): {} methods, 无增强插件", filePath, language, basicUnits.size());
-        return basicUnits;
+        log.info("CodeParser [scip]: {} 个文件, {} 个方法", byFile.size(), allUnits.size());
+        return byFile;
     }
 }
