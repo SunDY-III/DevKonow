@@ -1003,167 +1003,91 @@ public class CodeTools {
 
 ## 12. 剩余工作（TODO）
 
-### 12.1 用户标注的待办
+### 12.1 P0 — 核心链路
 
-| # | 待办 | 提出阶段 | 说明 |
-|---|------|---------|------|
-| 1 | 仓库大小限制 | Phase 2 | 限制导入的仓库最大大小（如 500MB），超过时提示 |
-| 2 | 私有仓库认证 | Phase 2 | 支持 SSH Key / Token 读取私有仓库 |
+| # | 方向 | 问题 | 改动 | 状态 |
+|---|------|------|------|------|
+| 1 | 代码审查 Agent 兜底 | 低置信路由空着，搜不到代码时只返回"找不到" | ✅ 已完成（codereview 模块，285 行） | ✅ |
+| 2 | 双通道路由决策 | 没有判断问题类型，代码/文档通道各自独立 | ~50 行改 ChatService.java | ⏳ |
+| 3 | 私有仓库认证 | 只支持公开仓库 | ~10 行改 GitRepoManager + ProjectController | ⏳ |
+| 4 | 仓库大小限制 | 可以克隆任意大小仓库 | ~10 行加 max-repo-size-mb 配置 | ⏳ |
 
-### 12.2 待完成的模块
+### 12.2 P1 — 体验优化
 
-| 模块 | 内容 | 依赖 | 预估工期 |
-|------|------|------|---------|
-| 前端导入页 | 仓库地址输入框 + SSE 进度条 + 错误处理 + 重试按钮 | 无 | 1 天 |
-| 前端项目选择器 | 顶部下拉切换项目 + 加载项目速览 | Phase 2.5 多项目 | 0.5 天 |
-| 项目速览 | 项目概况展示（语言/框架/模块/入口/故障） | Phase 2.5 | 0.5 天 |
-| 多项目管理 | Phase 2.5 全部内容 | 无 | 1.5 天 |
-| 代码审查 Agent | Phase 3 全部内容（替换工单 Agent） | Phase 2.5 | 3 天 |
-| 定时轮询 | @Scheduled 兜底检查新提交（Webhook 补充） | 已实现 checkCommitsBehind | 0.5 天 |
+| # | 方向 | 问题 | 改动 | 状态 |
+|---|------|------|------|------|
+| 1 | 前端导入页 | 仓库地址输入框 + SSE 进度条 + 错误处理 | ~200 行前端 | ⏳ |
+| 2 | 前端项目选择器 | 顶部下拉切换项目 + 加载项目速览 | ~100 行前端 | ⏳ |
+| 3 | 同义词扩展 | 搜"订单"搜不到"order" | ~50 行新增 QueryExpander + yml | ⏳ |
+| 4 | Webhook 并发锁 | 连续 push 两次冲突 | ~20 行 Semaphore 排队 | ⏳ |
+| 5 | force push 降级 | rebase 后 diff 失败无 fallback | ~10 行改 GitRepoManager | ⏳ |
+| 6 | 文档分块改进 | 按 500 字硬切，断章取义 | ~30 行改 TextSplitter | ⏳ |
 
-### 12.3 已知技术债务
+### 12.3 P2 — 完善
 
-| # | 债务 | 影响 | 建议处理时间 |
-|---|------|------|------------|
-| 1 | ThreadLocal 残留风险（`ProjectContextHolder`） | 请求复用线程池可能读到旧 projectId | Phase 2.5 |
-| 2 | Redis SCAN 性能随项目数下降 | 10 个项目时每次检索遍历全部向量 | 项目 > 5 个时 |
-| 3 | GitHistoryIndexer 未接入 MySQL/Redis 持久化 | commit 索引只输出日志，查询不可用 | Phase 2.4 |
-| 4 | CodeUnitEntity 索引未被 CodeIndexService 写入 MySQL | code_unit 表已建好但未写入数据（当前只写 Redis） | Phase 2.3 修复 |
-| 5 | 代码审查 Agent 未实现 | 工单 Agent 已裁撤，低置信路由暂无兜底 | Phase 3 |
+| # | 方向 | 问题 | 改动 | 状态 |
+|---|------|------|------|------|
+| 1 | 定时轮询 | 只有 Webhook 和手动触发 | ~30 行 @Scheduled | ⏳ |
+| 2 | GitHistoryIndexer 持久化 | commit 只打日志 | ~50 行写入 MySQL+Redis | ⏳ |
+| 3 | 20 题测试集 | 没有评测 | 手写标注问题 | ⏳ |
+| 4 | 前端精确搜索页 | 只有对话模式 | ~200 行前端 | ⏳ |
+| 5 | 前端点赞/踩反馈 | 不知道回答好坏 | ~50 行前后端 | ⏳ |
 
-### 12.4 判定点状态
+### 12.4 搁置
+
+| # | 问题 | 触发条件 |
+|---|------|---------|
+| 1 | ThreadLocal 风险（ProjectContextHolder） | 出现残留 bug |
+| 2 | Milvus 规模上限 | 单项目超 50 万方法 |
+| 3 | IDE 插件 | 决定产品形态时 |
+| 4 | SSH Key 认证 | 非 Token 私有仓库 |
+| 5 | Redis SCAN 性能 | 已迁移 Milvus，不再需要 |
+
+### 12.5 判定点状态
 
 | 判定点 | 状态 | 说明 |
 |--------|------|------|
-| #1 LanguageEnhancer 精度 | ✅ 已关闭 | JavaEnhancer 正常运行，调用链为类.方法级 |
-| #2 Git 异常处理 | ✅ 已关闭 | 三种错误码 + 临时目录 clone |
-| #3 ThreadLocal 线程安全 | ⚠️ 已缓解 | 项目中使用了 `ProjectContextHolder`，@Async 场景需显式传参 |
-| #4 Redis SCAN 性能 | ⏳ 未触发 | 当前测试规模不足 5000 条，P99 < 3s |
-| #5 增量一致性 | ✅ 已关闭 | 采用波及重建方案：git diff → ripple 查询 → 重索引波及文件 |
-| #6 Agent 偏航 | ⏳ 未触发 | Phase 3 实现代码审查 Agent 时测试 |
-| #7 LLM 误报率 | ⏳ 未触发 | Phase 3 准备 20+10 测试集时测试 |
-| #8 维护负担 | ⏳ 主观判断 | 当前 71 个文件，个人维护状态良好 |
+| #1 LanguageEnhancer 精度 | ✅ 已关闭 | JavaEnhancer 类.方法级调用链 |
+| #2 Git 异常处理 | ✅ 已关闭 | 三种错误码 + 临时目录 |
+| #3 ThreadLocal 线程安全 | ⚠️ 已缓解 | @Async 需显式传参 |
+| #4 向量存储性能 | ✅ 已解决 | Redis → Milvus IVF_FLAT |
+| #5 增量一致性 | ✅ 已关闭 | 波及重建 |
+| #6 Agent 偏航 | ✅ 已关闭 | 轮次上限 4 + 去重 |
+| #7 LLM 误报率 | ⏳ 未触发 | P2-3 测试集 |
+| #8 维护负担 | ⏳ 主观判断 | 78 个文件 |
 
 ---
 
-## 13. 分阶段实施计划
+## 13. 版本迭代计划
 
-### Phase 1：基础改造（3-4 天）✅ 已完成
+### 已完成
 
-```
-目标：把现有"文档问答"改成"代码问答"，不需 Git，手动验证
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| Phase 1 | Tree-sitter + LanguageEnhancer 分层架构 + JavaEnhancer 类型解析 | ✅ |
+| Phase 2 | Git 集成 + 一键导入 + 波及重建 + 边界 5 项修复 | ✅ |
+| Phase 2.5 | 多项目管理 + Milvus 迁移 | ✅ |
+| P0-1 | 代码审查 Agent 低置信兜底 | ✅ |
 
-```
-目标：把现有"文档问答"改成"代码问答"，不需 Git，手动验证
-
-改动：
-① LanguageEnhancer 接口 + LanguageEnhancerRegistry 创建      [半天]
-② CodeParser.java + TreeSitterParser.java + LanguageMapping   [半天]
-③ JavaEnhancer + JavaTypeResolver + JavaCallChainResolver     [1天]
-④ CodeUnit.java（含 enrichedCalls / resolvedType 字段）        [半天]
-⑤ RagService.java 新增代码检索通道                             [半天]
-⑥ ChatService + LlmStreamingService Prompt 改造               [半天]
-⑦ 前端：代码引用展示格式                                      [半天]
-
-验证：手动插入几条代码记录到 MySQL + Redis
-      问 "createOrder 方法在哪"
-      → 能搜出代码块 → LLM 带文件名/行号回答
-
-保留：治理层/向量存储/语义缓存/认证 全部不变 ✅
-```
-
-### Phase 2：Git 集成 + 一键导入 + 波及重建（7 天）✅ 已完成
+### 下一版本（v3.2）
 
 ```
-子阶段 2.1：Git 操作 + 结构扫描
-  ① GitRepoManager.java clone/pull               ✅
-     - 临时目录写入，ATOMIC_MOVE rename，失败自动清理
-     - 错误分类：NETWORK_ERROR / REPO_NOT_FOUND / PERMISSION_DENIED
-  ② StructureScanner.java                         ✅
-  ③ schema-v2.sql 新建表                           ✅
-
-子阶段 2.2：代码索引
-  ① CodeIndexService.java 全量 + 波及重建          ✅
-     - 三写架构：MySQL code_unit 表 + Redis 向量 + ripple 反向索引
-     - indexIncremental(): Git diff → 提取方法名 → 查调用方 → 重索引波及文件
-  ② GitHistoryIndexer.java commit 遍历 + 故障标记  ✅
-
-子阶段 2.3：一键导入编排
-  ① ProjectImportService.java                     ✅
-     - 模式 A: 首次导入（clone→scan→create→全量索引）
-     - 模式 B: 重新索引（pull→diff→波及重建）
-     - 重复导入拦截 + 索引标记 + 崩溃清理
-  ② ProjectController.java 导入端点 + SSE 进度     ✅
-     - POST /api/project/import?repoUrl=&force=
-     - POST /api/project/{id}/reindex
-     - GET  /api/project/{id}/reindex/check
-     - POST /api/project/webhook/github
-  ③ 前端导入页                                     ⏳ 搁置
-
-边界修复（5 项）：
-  ① 重复导入拦截  ② SSE 断连停止索引  ③ 索引标记+崩溃清理
-  ④ 删除联动清理 Redis  ⑤ clone 临时目录
-
-新提交检测：
-  - countCommitsBehind(): git fetch + rev-list HEAD..origin/main
-  - 有公网 → Webhook 实时触发
-  - 无公网 → 前端轮询 check 接口 + 用户确认刷新
-
-验证：贴一个真实 Git 地址 → 自动克隆 + 解析 + 索引
-      问该项目代码问题 → 能搜到真实代码 ✅
+P0-2: ChatService 双通道路由决策
+P0-3: 私有仓库认证（Token）
+P0-4: 仓库大小限制
+P1-1: 前端导入页（SSE 进度 + 错误处理）
+P1-2: 前端项目选择器
 ```
 
-### Phase 2.5：多项目管理（1.5 天）
+### 后续版本（v4.0）
 
 ```
-① CodeProject.java + Repository                   [0.5天]
-② ProjectContextHolder.java                        [半天]
-   ⚡ 判定点 #3：ThreadLocal 线程安全
-③ ProjectService.java CRUD                         [半天]
-④ 前端项目选择器 + 项目列表页                       [0.5天]
-⑤ VectorStoreService.searchByPrefix()               [半天]
-   ⚡ 判定点 #4：SCAN 性能
-
-验证：导入 2 个项目 → 切换 → 各自隔离检索
-      全部项目搜 → 跨项目聚合
+P1-3: 同义词扩展         P1-4: Webhook 并发锁
+P1-5: force push 降级    P1-6: 文档分块改进
+P2-1: 定时轮询           P2-2: GitHistoryIndexer 持久化
+P2-3: 20 题测试集        P2-4: 前端搜索页
+P2-5: 前端反馈
 ```
-
-### Phase 3：双通道融合 + 代码审查 Agent（3 天）
-
-```
-目标：让代码通道（AST/ripple）和文档通道（RAG）协同工作
-
-改动：
-① ChatService 双通道路由决策                        [1天]
-   - 问题类型判断（代码类 vs 文档类 vs 混合）
-   - 双通道并行检索 → RRF 融合
-   - 代码优先展示，文档做补充
-   - 置信度 < 0.45 → 代码审查 Agent
-
-② RagService 文档通道 RAG 优化                      [0.5天]
-   - 向量检索 + keyword 检索（现有逻辑，不变）
-   - 文档分块策略改进（按标题层级切，保留结构）
-   - 同义词扩展（用户在 Phase 2.4 做）
-
-③ CodeReviewAgentService.java + CodeTools.java    [1.5天]
-   ⚡ 判定点 #6：Agent 偏航
-   ⚡ 判定点 #7：LLM 误报率
-
-验证：
-  问 "createOrder 在哪" → 代码通道命中（方法定义+调用链）
-  问 "为什么用 Redis"   → 文档通道命中（设计文档段落）
-  问 "订单超时怎么办"   → 双通道融合（代码 + 文档 + 历史故障）
-```
-
-### 总工期
-
-| 阶段 | 工期 | 判定点 |
-|------|------|--------|
-| Phase 1 基础代码问答 | 3-4 天 | ✅ 完成 |
-| Phase 2 Git + 一键导入 + 波及重建 | 7 天 | ✅ 完成 |
-| Phase 2.5 多项目管理 | 1.5 天 | ⏳ 待开始 |
-| Phase 3 代码审查 | 3 天 | ⏳ 待开始 |
-| **合计** | **~15 天** | **已用 ~10 天，剩余 ~5 天** |
 
 ---
 
@@ -1171,43 +1095,36 @@ public class CodeTools {
 
 | 技术点 | 体现在哪 | 难度 |
 |-------|---------|------|
-| 技术点 | 体现在哪 | 难度 |
-|-------|---------|------|
 | **Tree-sitter + LanguageEnhancer 分层架构** | 基础多语言统一 + 插件按语言增强精度，零侵入 | ⭐⭐⭐⭐ |
 | **JavaEnhancer 类型解析** | JavaParser 做 import 解析，精确到类.方法级别调用链 | ⭐⭐⭐ |
-| **多源 RAG 融合** | 代码/文档/Git 三路并发检索，独立 RRF + 跨源加权 | ⭐⭐⭐ |
-| **代码审查 Agent** | @Tool 驱动 ReAct，复用现有 AiServices 架构 | ⭐⭐⭐ |
-| **调用链分析（自适应）** | 有插件 → 类.方法级别；无插件 → 方法名级别自动降级 | ⭐⭐⭐⭐ |
-| **一键导入** | Git clone → 自动检测结构 → 解析 → 索引，零配置 | ⭐⭐⭐ |
-| **波及重建（增量索引）** | Git diff → 提取变更方法 → MySQL 查调用方 → 只重索引波及文件 | ⭐⭐⭐⭐ |
+| **双通道检索（代码/文档 RAG）** | AST + ripple 精确搜方法 | ngram + 向量语义搜文档 | ⭐⭐⭐ |
+| **代码审查 Agent 兜底** | 低置信时 @Tool 驱动 scanFile + grepFiles 分析源码 | ⭐⭐⭐ |
+| **波及重建（增量索引）** | Git diff → 提取变更方法 → ripple 查调用方 → 只重索引波及文件 | ⭐⭐⭐⭐ |
 | **ripple 反向索引缓存** | Redis Set 存"方法名→调用方"，SMEMBERS 秒级查询 | ⭐⭐ |
-| **三写一致性架构** | 每个 CodeUnit 同时写入 MySQL + Redis 向量 + ripple 缓存 | ⭐⭐⭐ |
-| **多项目隔离** | Redis Key 三段式 + ThreadLocal 上下文 | ⭐⭐ |
+| **三写一致性架构** | 每个 CodeUnit 同时写入 MySQL + Milvus + ripple | ⭐⭐⭐ |
+| **一键导入** | Git clone → 自动检测结构 → 解析 → 索引，零配置 | ⭐⭐⭐ |
+| **Milvus 向量存储** | Redis SCAN → Milvus IVF_FLAT，百万级搜索 < 100ms | ⭐⭐ |
 | **SSE 进度推送** | 导入/对话均用 SSE，复用现有基础设施 | ⭐ |
 | **边界处理（5 项）** | 重复导入、SSE 断连、崩溃标记、Redis 泄漏、clone 临时目录 | ⭐⭐⭐ |
-| **新提交检测** | git fetch + rev-list 对比，支持 Webhook/轮询/手动三种模式 | ⭐⭐ |
-| **语义缓存** | 代码问答结果缓存，相似问题秒回 | ⭐⭐ |
+| **新提交检测** | git fetch + rev-list 对比，Webhook/轮询/手动三种模式 | ⭐⭐ |
 | **治理层复用** | 限流/熔断/审计/Token 计数全部保留 | ⭐⭐ |
 
 ---
 
 ## 附录：版本变更记录
 
-| 项目 | v1 全方案 | v2 删除集成 | v2.2 插件架构 | **v3 实现后（当前）** |
-|------|-----------|-------------|--------------|-------------------|
-| 文件总数 | ~63 | ~60 | ~65 | **~71** |
-| 新增文件 | 22 | 19 | 25 | **30** |
-| 已实现阶段 | 计划 | 计划 | 计划 | **Phase 1 + 2 ✅** |
-| Phase 1 Tree-sitter | ❌ | ❌ | ❌ | **✅ 完成** |
-| Phase 2 Git 集成 | ❌ | ❌ | ❌ | **✅ 完成** |
-| 波及重建 | ❌ | ❌ | ❌ | **✅ 完成** |
-| Phase 3 代码审查 | ❌ | ❌ | ❌ | ⏳ 待开始 |
-| 前端 | ❌ | ❌ | ❌ | ⏳ 搁置 |
-| 判定点状态 | 无 | 8 个 | 8 个 | 3/8 关闭，2/8 已缓解，3/8 未触发 |
+| 项目 | v1 全方案 | v2 删除集成 | v2.2 插件架构 | **v3.1（当前）** |
+|------|-----------|-------------|--------------|----------------|
+| 文件总数 | ~63 | ~60 | ~65 | **~78** |
+| 新增文件 | 22 | 19 | 25 | **32** |
+| 已实现阶段 | 计划 | 计划 | 计划 | **Phase 1 + 2 + P0-1 ✅** |
+| 低置信路由 | 工单 Agent | 空 | 空 | **代码审查 Agent ✅** |
+| 向量存储 | Redis SCAN | Redis SCAN | Redis SCAN | **Milvus IVF_FLAT ✅** |
+| 判定点状态 | 无 | 8 个 | 8 个 | 4/8 关闭，1/8 已缓解，3/8 未触发 |
 
 ---
 
-> **文档版本：** v3.0（Phase 1 + Phase 2 实现完毕）  
+> **文档版本：** v3.1（Phase 1 + 2 + Agent 兜底）  
 > **最后更新：** 2026-07-15  
-> **基于：** zhishu-ai-agent v1.0.0 (Spring Boot 3.2.5 + LangChain4j 0.36.2)  
-> **当前分支：** phase-1-code-parser（8 commits）
+> **基于：** zhishu-ai-agent (Spring Boot 3.2.5 + LangChain4j 0.36.2)  
+> **当前分支：** phase-1-code-parser
