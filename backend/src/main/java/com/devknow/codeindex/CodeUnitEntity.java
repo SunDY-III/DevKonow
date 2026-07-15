@@ -62,7 +62,7 @@ public class CodeUnitEntity {
     @Column(columnDefinition = "TEXT")
     private String calls;
 
-    /** JavaEnhancer 增强后的精确调用链（JSON 数组） */
+    /** SCIP 增强后的精确调用链（JSON 数组） */
     @Column(name = "enriched_calls", columnDefinition = "TEXT")
     private String enrichedCalls;
 

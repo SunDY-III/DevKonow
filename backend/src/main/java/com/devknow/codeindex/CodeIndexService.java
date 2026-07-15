@@ -312,7 +312,7 @@ public class CodeIndexService {
      * 存 Redis Set 结构，查询时 SMEMBERS 秒回。
      */
     private void buildRippleCache(Long projectId, CodeUnit unit) {
-        // 用 enrichedCalls（优先，JavaEnhancer 精度高）或 calls（Tree-sitter 基础）
+        // 用 enrichedCalls（优先，SCIP 精度高）或 calls（Tree-sitter 基础）
         List<String> callList = unit.getEnrichedCalls() != null && !unit.getEnrichedCalls().isEmpty()
                 ? unit.getEnrichedCalls()
                 : unit.getCalls();

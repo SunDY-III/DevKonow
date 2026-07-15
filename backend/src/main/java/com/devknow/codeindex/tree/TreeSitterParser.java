@@ -194,7 +194,7 @@ public class TreeSitterParser {
                 }
             }
         }
-        // 也检查父节点的 pre-comment（JavaParser 风格的前置注释）
+        // 也检查父节点的 pre-comment（前置注释）
         TSNode parent = node.getParent();
         if (parent != null) {
             for (int i = 0; i < parent.getChildCount(); i++) {

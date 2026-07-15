@@ -20,7 +20,7 @@ public interface CodeUnitEntityRepository extends JpaRepository<CodeUnitEntity, 
 
     /**
      * 波及重建核心查询：找出调用了指定方法名的所有文件。
-     * 同时匹配 calls（Tree-sitter 语法级）和 enriched_calls（JavaEnhancer 类.方法级）。
+     * 同时匹配 calls（Tree-sitter 语法级）和 enriched_calls（SCIP 类.方法级）。
      *
      * @param projectId  项目 ID
      * @param methodName 被调用的方法名
