@@ -3,6 +3,7 @@ package com.zhishu.project;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zhishu.codeindex.GitRepoManager;
 import com.zhishu.common.ApiResponse;
+import com.zhishu.common.GitException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
@@ -51,6 +52,32 @@ public class ProjectController {
         SseEmitter emitter = new SseEmitter(300_000L);  // 5 分钟超时
         projectImportService.importFromRepo(repoUrl, force, token, emitter);
         return emitter;
+    }
+
+    /**
+     * 验证仓库地址和 Token 是否有效。
+     * 在真正导入前调用，用户确认后再调 /import。
+     * <p>
+     * 成功返回仓库状态，失败返回具体错误码：
+     *   REPO_NOT_FOUND → 地址错误
+     *   PERMISSION_DENIED → Token 无效
+     *   NETWORK_ERROR → 网络不可达
+     */
+    @PostMapping("/verify")
+    public ApiResponse<Map<String, Object>> verifyRepo(@RequestParam String repoUrl,
+                                                        @RequestParam(required = false) String token) {
+        try {
+            String result = gitRepoManager.verifyRepo(repoUrl, token);
+            String repoName = GitRepoManager.extractRepoName(repoUrl);
+            return ApiResponse.ok(Map.of(
+                    "valid", true,
+                    "repoName", repoName,
+                    "detail", result,
+                    "message", "仓库可访问，请确认地址后开始导入"
+            ));
+        } catch (GitException e) {
+            return ApiResponse.fail(400, e.getErrorCode() + ": " + e.getMessage());
+        }
     }
 
     /**

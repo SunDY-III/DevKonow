@@ -8,6 +8,7 @@ import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.api.errors.InvalidRemoteException;
 import org.eclipse.jgit.api.errors.TransportException;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
+import org.eclipse.jgit.api.LsRemoteCommand;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -183,6 +184,63 @@ public class GitRepoManager {
             log.warn("Git pull 失败: {}", repoPath, e);
             return null;
         }
+    }
+
+    /**
+     * 验证仓库地址和 Token 是否有效。
+     * 通过 LSRemote 轻量级连接远程仓库，不下载任何数据。
+     *
+     * @param repoUrl Git 仓库地址
+     * @param token   私有仓库 Token（可为 null）
+     * @return 远程仓库信息（HEAD 指向的分支和最新提交）
+     * @throws GitException REPO_NOT_FOUND / PERMISSION_DENIED / NETWORK_ERROR
+     */
+    public String verifyRepo(String repoUrl, String token) throws GitException {
+        try {
+            LsRemoteCommand cmd = Git.lsRemoteRepository()
+                    .setRemote(repoUrl)
+                    .setTimeout(15);
+
+            if (token != null && !token.isBlank()) {
+                cmd.setCredentialsProvider(new UsernamePasswordCredentialsProvider(token, ""));
+            }
+
+            var refs = cmd.call();
+            String head = refs.stream()
+                    .filter(r -> "HEAD".equals(r.getName()))
+                    .findFirst()
+                    .map(r -> r.getObjectId() != null ? r.getObjectId().getName() : "unknown")
+                    .orElse("unknown");
+
+            log.info("仓库验证通过: {} HEAD={}", sanitizeUrl(repoUrl), head.substring(0, 8));
+            return "仓库可访问 | HEAD: " + head.substring(0, 8);
+
+        } catch (InvalidRemoteException e) {
+            throw new GitException(GitException.ErrorCode.REPO_NOT_FOUND,
+                    "仓库不存在，请检查地址是否正确: " + repoUrl);
+        } catch (TransportException e) {
+            String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
+            if (msg.contains("auth") || msg.contains("permission") || msg.contains("denied")
+                    || msg.contains("403") || msg.contains("401")) {
+                throw new GitException(GitException.ErrorCode.PERMISSION_DENIED,
+                        "Token 无效或已过期，请重新生成后重试: " + repoUrl);
+            }
+            if (msg.contains("not found") || msg.contains("404")) {
+                throw new GitException(GitException.ErrorCode.REPO_NOT_FOUND,
+                        "仓库不存在，请检查地址是否正确: " + repoUrl);
+            }
+            throw new GitException(GitException.ErrorCode.NETWORK_ERROR,
+                    "仓库连接失败: " + e.getMessage());
+        } catch (Exception e) {
+            throw new GitException(GitException.ErrorCode.CLONE_FAILED,
+                    "仓库验证失败: " + e.getMessage());
+        }
+    }
+
+    /** 脱敏日志中的 repoUrl（去掉 token 参数） */
+    public static String sanitizeUrl(String url) {
+        if (url == null) return null;
+        return url.replaceAll("[?&]token=[^&]+", "?token=***");
     }
 
     /**
