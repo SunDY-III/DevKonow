@@ -2,7 +2,12 @@
 
 > 基于 zhishu-ai-agent（RAG + LangChain4j Agent）改造为面向开发团队的代码知识平台。
 > **放弃 Claude Code / Copilot 集成方案**，专注核心的代码索引 + 代码问答 + 代码审查。
-> 核心资产全部保留，增量新增 20 个文件。预留缺陷判定点，由实施者根据实际情况做决策。
+> 核心资产全部保留，增量新增 30 个文件。
+>
+> **双通道架构：**
+> - **代码通道**（AST + ripple 反向索引）：搜方法定义、调用链、代码变更，精度优先
+> - **文档通道**（RAG + 向量检索）：搜开发文档、设计文档、接口文档，语义理解优先
+> - 两个通道共同服务于开发者的自然语言问答
 
 ---
 
@@ -30,70 +35,79 @@
 
 **一句话定位：**
 
-> 企业内部代码的 AI 搜索引擎 + 长期记忆层。贴一个 Git 地址，系统自动拉取代码并建立索引，开发者用自然语言提问即可检索代码、了解项目结构、查询历史故障，需要时由 AI 进行代码审查。
+> 开发者的双通道知识助手。**代码通道**帮开发者搜方法、查调用链、追溯变更；**文档通道**帮开发者理解项目设计方向、技术选型、接口协议。贴一个 Git 地址，代码和文档自动建立索引，用自然语言提问即可。
 
 **核心价值：**
 
-| 问题 | 解决方案 |
-|------|---------|
-| 代码知识失传（老员工离职，新人靠猜） | 所有代码 + 文档 + 故障历史被索引为"活知识库"，永久可检索 |
-| 项目结构不明（几百个文件不知从哪看起） | 一键导入后自动生成项目速览（语言/框架/模块/入口点） |
-| 同一个 bug 反复出现 | 修完即记入知识库，后续检索可命中 |
-| 多项目切换，上下文混乱 | 按项目隔离，切换时自动切换检索范围 |
-| 代码审查随缘（没时间/没人审） | AI Agent 自动审查，给出问题和建议（人工兜底） |
+| 问题 | 解决方案 | 通道 |
+|------|---------|------|
+| "createOrder 方法在哪？谁调了它？" | AST 解析方法粒度，ripple 反向索引查调用链 | **代码通道** |
+| "这个项目为什么要用 Redis 而不是 Memcached？" | RAG 检索架构文档、设计文档中的相关段落 | **文档通道** |
+| "订单超时怎么处理？" | 同时搜代码（timeout 处理逻辑）+ 文档（超时设计文档） | **双通道融合** |
+| "支付服务的接口协议是什么？" | RAG 检索 API 文档中的接口定义 | **文档通道** |
+| "同一个 bug 以前修过吗？" | GitHistoryIndexer 检索 commit 记录 + 故障知识库 | **代码通道** |
+| "新人不了解项目结构从哪看起？" | 一键导入后自动生成项目速览 | **双通道** |
 
 ---
 
 ## 2. 改造全景
 
-### 2.1 功能架构
+### 2.1 双通道架构
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                   DevKnow 功能架构（放弃集成方案）             │
-├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│  ┌─ 用户入口（前端）──────────────────────────────────┐     │
-│  │  ① 导入页：贴 Git 地址 → 一键导入 + 实时 SSE 进度     │     │
-│  │  ② 对话页：项目选择器 + SSE 流式代码问答              │     │
-│  │  ③ 搜索页：精确搜索 + 按项目/类型筛选                │     │
-│  │  ④ 项目页：项目列表 + 速览 + 仓库管理                │     │
-│  └────────────────────────────────────────────────────────┘     │
-│                          │                                     │
-│  ┌─ API 层（Controller）──────────────────────────────┐     │
-│  │  POST /api/project/import    ← SSE 进度推送（新增）│     │
-│  │  GET  /api/project/list                   （新增）│     │
-│  │  GET  /api/project/{id}/summary          （新增）│     │
-│  │  POST /api/project/{id}/repo            （新增）│     │
-│  │  DELETE /api/project/{id}                （新增）│     │
-│  │  POST /api/chat/stream  ← SSE 对话（加 projectId）│     │
-│  │  POST /api/code/review                    （新增）│     │
-│  │  GET  /api/code/search                    （新增）│     │
-│  └────────────────────────────────────────────────────────┘     │
-│                          │                                     │
-│  ┌─ 核心服务层─────────────────────────────────────────┐     │
-│  │  ① ProjectImportService   一键导入编排               │     │
-│  │     clone → scan → create → index → done            │     │
-│  │  ② StructureScanner       自动检测结构               │     │
-│  │     语言/框架/构建工具/入口点/模块                    │     │
-│  │  ③ GitRepoManager + CodeParser + CodeIndexService   │     │
-│  │     Git 克隆 → AST 解析 → 向量索引                    │     │
-│  │  ④ MultiSourceRetriever   多源检索聚合              │     │
-│  │     代码/文档/Git 历史三路并行 + RRF 融合            │     │
-│  │  ⑤ CodeReviewAgentService 代码审查 Agent            │     │
-│  │     reviewCode / analyzeCallChain / suggestFix      │     │
-│  │  **放弃：ClaudeMdExporter / McpServer（无集成方案）** │     │
-│  └────────────────────────────────────────────────────────┘     │
-│                          │                                     │
-│  ┌─ 基础设施层（复用）────────────────────────────────┐     │
-│  │  MySQL  │  Redis  │  RabbitMQ  │  MinIO                │     │
-│  │  JPA    │  向量存储 │  语义缓存  │  治理层（限流/熔断/审计） │     │
-│  └────────────────────────────────────────────────────────┘     │
-│                          │                                     │
-│  ┌─ AI 层（复用）─────────────────────────────────────┐     │
-│  │  LLM (OpenAI 协议)  │  Embedding  │  LangChain4j        │     │
-│  └────────────────────────────────────────────────────────┘     │
-└──────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                    DevKnow 双通道架构                            │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ┌─ 用户入口（前端）────────────────────────────────────┐       │
+│  │  导入页 / 对话页 / 搜索页 / 项目页 / 文档管理页          │       │
+│  └────────────────────────────────────────────────────────┘       │
+│                          │                                       │
+│   ┌────── 两条检索通道 ───────┐                                  │
+│   ▼                            ▼                                 │
+│ ┌─────────────────┐  ┌────────────────────────┐                  │
+│ │  代码通道        │  │  文档通道（RAG）        │                  │
+│ │  (精度优先)      │  │  (语义理解优先)          │                  │
+│ │                  │  │                         │                  │
+│ │ 搜什么：         │  │  搜什么：                │                  │
+│ │ 方法/调用链/变更  │  │  架构文档/设计文档/API   │                  │
+│ │                  │  │                         │                  │
+│ │ 索引方式：        │  │  索引方式：              │                  │
+│ │ AST 解析方法级    │  │  Tika 解析全文           │                  │
+│ │ CodeUnit + ripple │  │  TextSplitter 分块       │                  │
+│ │ MySQL + Redis     │  │  Embedding 向量化       │                  │
+│ │                  │  │                         │                  │
+│ │ 检索方式：        │  │  检索方式：              │                  │
+│ │ ① method_name =   │  │  ① 向量余弦相似度       │                  │
+│ │ ② FULLTEXT        │  │  ② ngram 关键词         │                  │
+│ │ ③ ripple SMEMBERS │  │                         │                  │
+│ └─────────────────┘  └────────────────────────┘                 │
+│           │                       │                              │
+│           └───────────┬───────────┘                              │
+│                       ▼                                          │
+│  ┌─────────────────────────────────────────┐                     │
+│  │    ChatService 路由决策                   │                    │
+│  │                                          │                    │
+│  │    "createOrder 在哪"    → 代码通道       │                    │
+│  │    "为什么用 Redis"      → 文档通道 RAG   │                    │
+│  │    "订单超时怎么处理"    → 双通道融合      │                    │
+│  │    "支付接口协议"        → 文档通道 RAG   │                    │
+│  │    confidence < 0.45    → 代码审查 Agent  │                    │
+│  └─────────────────────────────────────────┘                     │
+│                       │                                          │
+│                       ▼                                          │
+│  ┌─ 基础设施层（复用）──────────────────────────────────┐       │
+│  │  MySQL（2 套表）│ Redis（向量/缓存/ripple）│ RabbitMQ   │       │
+│  │  code_unit      │  vec:chunk:*（文档向量）            │       │
+│  │  document_chunk │  vec:{id}:code:*（代码向量）        │       │
+│  │                 │  ripple:callers:*（代码调用链）      │       │
+│  └────────────────────────────────────────────────────────┘       │
+│                       │                                          │
+│  ┌─ AI 层 ──────────────────────────────────────────────┐       │
+│  │  LLM (OpenAI 协议)  │  Embedding（文档向量化）         │       │
+│  │  LangChain4j AiServices（Agent 编排）                 │       │
+│  └────────────────────────────────────────────────────────┘       │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ### 2.2 文件全景
@@ -174,7 +188,32 @@ zhishu-ai-agent/
 │   │
 │   ├── governance/ (5个文件)             [不改]
 │   │
-│   └── knowledge/ (6个文件)              [不改]
+│   ├── knowledge/ (6个文件)              [✅ 文档通道 RAG，复用]
+│   │   ├── DocumentController.java        [上传文档/列表/删除]
+│   │   ├── DocumentService.java           [文档 CRUD + MD5 去重]
+│   │   ├── DocumentParseListener.java     [RabbitMQ 异步解析]
+│   │   ├── TextSplitter.java              [文档分块（按标题层级切）]
+│   │   ├── KnowledgeDocument.java         [文档元数据实体]
+│   │   ├── KnowledgeDocumentRepository.java
+│   │   ├── DocumentChunk.java             [文档块实体]
+│   │   └── DocumentChunkRepository.java   [含 ngram FULLTEXT 查询]
+│   │
+│   └── codeindex/ (14个文件)              [✅ 代码通道，已新增]
+│       ├── CodeParser.java                [Tree-sitter + LanguageEnhancer]
+│       ├── CodeUnit.java                  [代码单元模型]
+│       ├── CodeUnitEntity.java            [JPA 实体]
+│       ├── CodeUnitEntityRepository.java  [反向调用链查询]
+│       ├── CodeIndexService.java          [全量索引 + 波及重建]
+│       ├── GitHistoryIndexer.java         [commit 遍历 + 故障标记]
+│       ├── GitRepoManager.java            [clone/pull/diff/check]
+│       ├── LanguageEnhancer.java           [插件接口]
+│       ├── LanguageEnhancerRegistry.java   [插件注册表]
+│       ├── tree/TreeSitterParser.java      [Tree-sitter 统一解析]
+│       ├── tree/LanguageMapping.java       [多语言映射表]
+│       └── enhance/java/
+│           ├── JavaEnhancer.java           [Java 类型解析]
+│           ├── JavaTypeResolver.java
+│           └── JavaCallChainResolver.java
 │
 ├── src/main/resources/
 │   ├── application.yml                  [改：新增配置段]
@@ -210,7 +249,7 @@ zhishu-ai-agent/
 | **消息队列** | `RabbitConfig` | 复用，代码索引走异步 |
 | **对象存储** | `MinioConfig` | 复用 |
 | **RAG 算法** | `RrfFusion`, `Reranker`, `MmrSelector` | 多源融合直接复用 RRF |
-| **知识库管道** | `knowledge/*` (6个) | 保留作为"文档检索源" |
+| **知识库管道（RAG 文档通道）** | `knowledge/*` (6个) | **核心资产**。Tika 解析 + TextSplitter 分块 + Embedding 向量化 + 全文检索 = 文档通道 RAG。用于搜索开发文档、设计文档、接口协议 |
 
 ---
 
@@ -241,12 +280,32 @@ POST /api/code/review    // 代码审查
 GET  /api/code/search    // 精确搜索
 ```
 
-### 4.3 `ChatService.java` — 核心路由改造
+### 4.3 `ChatService.java` — 双通道路由决策
 
 ```
-改造前：RAG 检索 → 置信度路由（高→LLM，低→工单 Agent）
-改造后：多源检索 → 置信度路由（高→LLM，低→代码审查 Agent）
-改动：① 方法加 projectId  ② 改 MultiSourceRetriever  ③ 改 Prompt
+改造前：单通道 RAG 检索 → 置信度路由（高→LLM，低→工单 Agent）
+
+改造后：双通道并行检索 → 融合 → 置信度路由（高→LLM，低→代码审查 Agent）
+
+路由决策逻辑：
+
+  用户问题
+     │
+     ├── 代码通道（AST + ripple）:
+     │   "createOrder 在哪" → 精确搜方法名 + 关键词
+     │   搜不到回退：尝试同义词扩展 → ngram 全文
+     │
+     ├── 文档通道（RAG + 向量）:
+     │   "为什么用 Redis" → Embedding 向量化 → 余弦相似度
+     │   搜不到回退：ngram 关键词 → 返回文档原文
+     │
+     └── 融合策略:
+         两个通道各自返回 TopN，合并后 RRF 排序
+         代码通道命中 → 优先展示代码（开发者通常先找代码）
+         文档通道命中 → 展示文档（没有代码结果时）
+         都没命中 → 低置信路由 → 代码审查 Agent
+
+改动：① 方法加 projectId  ② 双通道并行  ③ 改 Prompt 区分代码/文档引用
 ```
 
 ### 4.4 `LlmStreamingService.java` — Prompt 改造
@@ -256,12 +315,27 @@ SystemMessage 从"企业知识库助手"改为"开发者代码助手"
 要求：引用具体文件名+行号，解释时附调用链
 ```
 
-### 4.5 `RagService.java` — 新增多源检索入口
+### 4.5 `RagService.java` — 文档通道 RAG 检索
 
 ```java
-// 保留现有方法，新增：
-public MultiRagResult retrieve(Long userId, Long projectId, String question) {
-    return multiSourceRetriever.retrieve(userId, projectId, question);
+// 保留现有方法（文档通道 RAG），新增代码检索入口：
+
+// 文档通道（RAG）— 搜开发文档/设计文档/接口文档
+public RagResult retrieveDoc(Long userId, String question) {
+    // 向量检索 → keyword 检索 → RRF → TopN
+    // 复用现有的 document_chunk 表 + ngram 全文索引
+}
+
+// 代码通道 — 搜方法/调用链
+public List<ScoredChunk> retrieveCode(Long userId, Long projectId, String question) {
+    // 精确搜 method_name → 关键词搜 → ripple 查调用链
+    // 使用 code_unit 表 + ripple 反向索引
+}
+
+// 双通道融合
+public FusionResult retrieveBoth(Long userId, Long projectId, String question) {
+    // 同时调 retrieveDoc + retrieveCode
+    // 各自 TopN → RRF 融合 → 返回结果
 }
 ```
 
@@ -1054,19 +1128,31 @@ public class CodeTools {
       全部项目搜 → 跨项目聚合
 ```
 
-### Phase 3：多源检索 + 代码审查 Agent（3 天）
+### Phase 3：双通道融合 + 代码审查 Agent（3 天）
 
 ```
-① MultiSourceRetriever.java                       [1天]
-   ⚡ 判定点 #4：SCAN 性能实测
-② SourceProvider.java + 三路实现                    [1天]
+目标：让代码通道（AST/ripple）和文档通道（RAG）协同工作
+
+改动：
+① ChatService 双通道路由决策                        [1天]
+   - 问题类型判断（代码类 vs 文档类 vs 混合）
+   - 双通道并行检索 → RRF 融合
+   - 代码优先展示，文档做补充
+   - 置信度 < 0.45 → 代码审查 Agent
+
+② RagService 文档通道 RAG 优化                      [0.5天]
+   - 向量检索 + keyword 检索（现有逻辑，不变）
+   - 文档分块策略改进（按标题层级切，保留结构）
+   - 同义词扩展（用户在 Phase 2.4 做）
+
 ③ CodeReviewAgentService.java + CodeTools.java    [1.5天]
    ⚡ 判定点 #6：Agent 偏航
    ⚡ 判定点 #7：LLM 误报率
-④ ChatService.java 置信度路由改造                   [0.5天]
 
-验证：知识库回答不了的问题 → 触发审查 Agent
-      Agent 分析代码给出建议
+验证：
+  问 "createOrder 在哪" → 代码通道命中（方法定义+调用链）
+  问 "为什么用 Redis"   → 文档通道命中（设计文档段落）
+  问 "订单超时怎么办"   → 双通道融合（代码 + 文档 + 历史故障）
 ```
 
 ### 总工期
