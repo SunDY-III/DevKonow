@@ -1,10 +1,10 @@
-# 一键拉起全部中间件：docker compose up -d
+name: devknow
 services:
   mysql:
     image: mysql:8.0
     environment:
       MYSQL_ROOT_PASSWORD: root123
-      MYSQL_DATABASE: zhishu
+      MYSQL_DATABASE: devknow
     ports: ["3306:3306"]
     volumes:
       - ./sql/schema.sql:/docker-entrypoint-initdb.d/schema.sql
