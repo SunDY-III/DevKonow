@@ -39,23 +39,6 @@ CREATE TABLE IF NOT EXISTS document_chunk (
   FULLTEXT KEY ft_content (content) WITH PARSER ngram
 ) ENGINE=InnoDB;
 
--- 工单表（@Version 乐观锁防状态流转并发冲突）
-CREATE TABLE IF NOT EXISTS ticket (
-  id           BIGINT AUTO_INCREMENT PRIMARY KEY,
-  ticket_no    VARCHAR(32)  NOT NULL UNIQUE,
-  user_id      BIGINT       NOT NULL,
-  title        VARCHAR(255) NOT NULL,
-  description  TEXT,
-  category     VARCHAR(16)  COMMENT 'FAULT/CONSULT/PERMISSION/PURCHASE',
-  status       VARCHAR(16)  NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/PROCESSING/RESOLVED/CLOSED',
-  assignee_id  BIGINT       COMMENT '处理人',
-  version      INT          NOT NULL DEFAULT 0 COMMENT 'JPA 乐观锁',
-  created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  KEY idx_user (user_id),
-  KEY idx_assignee (assignee_id, status)
-) ENGINE=InnoDB;
-
 -- Token 计费审计流水（AOP/回调记录，定时任务按用户聚合出日报）
 CREATE TABLE IF NOT EXISTS token_usage_log (
   id            BIGINT AUTO_INCREMENT PRIMARY KEY,

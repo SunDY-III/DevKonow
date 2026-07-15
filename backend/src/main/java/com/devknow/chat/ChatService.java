@@ -179,7 +179,7 @@ public class ChatService {
     private void handleAgentRoute(Long userId, String conversationId, String question,
                                    SseEmitter emitter, AtomicBoolean closed) {
         String agentReply = codeReviewAgentService.analyze(userId, projectId, conversationId, question);
-        send(emitter, closed, "ticket", "agent");
+        send(emitter, closed, "agent", agentReply);
         send(emitter, closed, "token", agentReply);
         send(emitter, closed, "done", "");
         emitter.complete();
