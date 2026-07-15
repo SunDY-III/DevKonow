@@ -11,10 +11,10 @@
         <relativePath/>
     </parent>
 
-    <groupId>com.zhishu</groupId>
-    <artifactId>zhishu-ai-agent</artifactId>
+    <groupId>com.devknow</groupId>
+    <artifactId>devknow</artifactId>
     <version>1.0.0</version>
-    <name>zhishu-ai-agent</name>
+    <name>devknow</name>
     <description>企业知识库问答与智能工单 Agent 平台（RAG + LangChain4j Agent）</description>
 
     <properties>
