@@ -1,5 +1,6 @@
 package com.zhishu.codeindex;
 
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.LogCommand;
@@ -17,6 +18,8 @@ import org.springframework.stereotype.Component;
 
 import java.io.File;
 import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -30,7 +33,10 @@ import java.util.List;
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class GitHistoryIndexer {
+
+    private final GitCommitRepository gitCommitRepo;
 
     /** 标记为"故障"的 commit 关键词 */
     private static final List<String> INCIDENT_KEYWORDS = List.of(
@@ -71,8 +77,6 @@ public class GitHistoryIndexer {
                                 ? commit.getAuthorIdent().getName() : "unknown";
                         String email = commit.getAuthorIdent() != null
                                 ? commit.getAuthorIdent().getEmailAddress() : "";
-                        long commitTime = commit.getCommitTime() * 1000L;  // → milliseconds
-
                         // 生成 diff 摘要（只取文件列表，不取完整 diff）
                         String diffSummary = generateDiffSummary(git.getRepository(), commit);
 
@@ -83,17 +87,21 @@ public class GitHistoryIndexer {
                             log.info("故障 commit 已标记: {} ({})", hash, message.lines().findFirst().orElse(""));
                         }
 
-                        // TODO: 存入 MySQL git_commit 表 + Redis 向量
-                        // mysql: INSERT INTO git_commit (project_id, commit_hash, author_name, ...)
-                        // redis: vec:{projectId}:git:{hash} → vector record
-                        // Phase 2.2 暂不实现持久化，仅输出日志
-                        if (count < 5 || isIncident) {
-                            log.debug("commit[{}]: {} | {} | incident={}",
-                                    hash.substring(0, 8),
-                                    message.lines().findFirst().orElse("").trim(),
-                                    author,
-                                    isIncident);
-                        }
+                        // 持久化到 MySQL git_commit 表
+                        GitCommitEntity entity = GitCommitEntity.builder()
+                                .projectId(projectId)
+                                .commitHash(hash)
+                                .authorName(author)
+                                .authorEmail(email)
+                                .message(message.lines().findFirst().orElse("").trim())
+                                .diffSummary(diffSummary != null && diffSummary.length() > 500
+                                        ? diffSummary.substring(0, 500) : diffSummary)
+                                .incident(isIncident)
+                                .severity(isIncident ? severityFromMessage(message) : null)
+                                .committedAt(LocalDateTime.ofEpochSecond(
+                                        commit.getCommitTime(), 0, ZoneOffset.UTC))
+                                .build();
+                        gitCommitRepo.save(entity);
 
                         count++;
 
@@ -158,6 +166,10 @@ public class GitHistoryIndexer {
         }
     }
 
+    /** 严重故障关键词 */
+    private static final List<String> SEVERE_KEYWORDS = List.of(
+            "critical", "crash", "data loss", "数据丢失", "崩溃", "安全", "security", "vulnerability");
+
     /**
      * 判断 commit 是否为故障修复。
      */
@@ -165,5 +177,16 @@ public class GitHistoryIndexer {
         if (message == null) return false;
         String lower = message.toLowerCase();
         return INCIDENT_KEYWORDS.stream().anyMatch(lower::contains);
+    }
+
+    /**
+     * 从 commit message 推断严重程度。
+     */
+    private String severityFromMessage(String message) {
+        if (message == null) return "MAJOR";
+        String lower = message.toLowerCase();
+        if (SEVERE_KEYWORDS.stream().anyMatch(lower::contains)) return "CRITICAL";
+        if (lower.contains("minor") || lower.contains("typo") || lower.contains("docs")) return "MINOR";
+        return "MAJOR";
     }
 }

@@ -1,0 +1,24 @@
+# 同义词映射：用户搜索词 → 代码中可能的写法
+# 格式：搜索词: 同义词1, 同义词2, ...
+订单: order, ord, dingdan
+用户: user, usr
+支付: pay, payment, zhifu
+查询: query, qry, get, find, search, list
+创建: create, crt, add, new, insert, generate
+更新: update, upd, modify, edit, change, alter
+删除: delete, del, remove, drop, clear
+权限: permission, auth, perm, priv, authority
+配置: config, cfg, setting, conf, configuration
+登录: login, signin, auth
+注册: register, signup, enroll
+超时: timeout, time_out, expire, overdue, time out
+异常: exception, error, fault, throwable
+缓存: cache, redis, memcached, buffer
+队列: queue, mq, message, rabbitmq, kafka
+订单: order, dingdan, ord
+用户: user, usr
+支付: pay, zhifu
+查询: query, get, find, search
+创建: create, add, new
+更新: update, modify, edit
+删除: delete, remove
