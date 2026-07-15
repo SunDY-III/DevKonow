@@ -34,10 +34,19 @@ services:
     command: milvus run standalone
     environment:
       ETCD_USE_EMBED: "true"
-      MINIO_USE_EMBED: "true"
+      GOGC: "200"                            # 降低 GC 频率，减少 CPU 开销
+      GOMEMLIMIT: "2048"                     # Go 软内存限制（MiB）
+      CACHE_SIZE: "1024"                     # Milvus 缓存大小（MB），默认 4096
+      MQ_TYPE: "local"                       # 使用本地消息队列，不额外占用资源
     ports: ["19530:19530"]
     volumes:
       - milvus-data:/var/lib/milvus
+    deploy:
+      resources:
+        limits:
+          memory: 3g
+        reservations:
+          memory: 1g
 
 volumes:
   mysql-data:

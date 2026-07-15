@@ -15,6 +15,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Lazy;
 
 import java.util.List;
 
@@ -33,12 +34,12 @@ public class MilvusConfig {
 
     private MilvusClientV2 client;
 
-    @Bean
+    @Bean @Lazy
     public MilvusClientV2 milvusClient() {
         if (client != null) return client;
-
         ConnectConfig config = ConnectConfig.builder()
-                .uri(host + ":" + port)
+                .uri("http://" + host + ":" + port)
+                .connectTimeoutMs(5000)
                 .build();
 
         client = new MilvusClientV2(config);
