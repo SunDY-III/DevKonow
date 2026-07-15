@@ -1,10 +1,10 @@
 package com.zhishu.chat;
 
 import com.zhishu.cache.SemanticCacheService;
+import com.zhishu.codereview.CodeReviewAgentService;
 import com.zhishu.governance.SensitiveWordFilter;
 import com.zhishu.rag.RagResult;
 import com.zhishu.rag.RagService;
-import com.zhishu.ticket.TicketAgentService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -16,11 +16,15 @@ import java.io.IOException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * 对话主链路：敏感词过滤 -> 语义缓存 -> RAG 混合检索 -> 置信度路由（低置信转工单 Agent）
- * -> SSE 流式生成 -> 引用溯源 -> 记忆落库 -> 缓存回填。
+ * 对话主链路。
  *
- * <p>流式生成与熔断降级下沉到 {@link LlmStreamingService}：{@code @CircuitBreaker} 依赖 AOP 代理，
- * 必须跨 Bean 调用才生效，不能写成本类的自调用。</p>
+ * <p>路由决策：
+ * <ol>
+ *   <li>敏感词过滤</li>
+ *   <li>语义缓存命中 → 直接返回</li>
+ *   <li>RAG 检索 → 置信度 ≥ 阈值 → LLM 流式生成</li>
+ *   <li>RAG 检索 → 置信度 < 阈值 → 代码审查 Agent 兜底</li>
+ * </ol>
  */
 @Slf4j
 @Service
@@ -29,36 +33,36 @@ public class ChatService {
 
     private final RagService ragService;
     private final SemanticCacheService semanticCacheService;
-    private final TicketAgentService ticketAgentService;
+    private final CodeReviewAgentService codeReviewAgentService;
     private final SensitiveWordFilter sensitiveWordFilter;
     private final LlmStreamingService llmStreamingService;
 
     @Value("${app.rag.confidence-threshold}")
     private double confidenceThreshold;
 
-    /**
-     * SSE 事件协议：
-     *   token  - 增量正文      source - 引用来源 JSON
-     *   cached - 命中语义缓存   ticket - 已转工单
-     *   done   - 结束          error  - 异常
-     */
+    /** 当前对话的项目 ID（由 Controller 设置） */
+    private Long projectId = 0L;
+
+    public void setProjectId(Long projectId) {
+        this.projectId = projectId != null ? projectId : 0L;
+    }
+
     @Async
     public void streamChat(Long userId, String conversationId, String question, SseEmitter emitter) {
-        // 客户端断连检测：Emitter 完成/超时后置位，生成回调里检查并停止写出
         AtomicBoolean closed = new AtomicBoolean(false);
         emitter.onCompletion(() -> closed.set(true));
         emitter.onTimeout(() -> { closed.set(true); emitter.complete(); });
         emitter.onError(e -> closed.set(true));
 
         try {
-            // 0. 输入侧敏感词拦截
+            // 0. 敏感词拦截
             if (sensitiveWordFilter.containsSensitive(question)) {
                 send(emitter, closed, "error", "您的输入包含敏感内容，请修改后重试");
                 emitter.complete();
                 return;
             }
 
-            // 1. 语义缓存：相似问题直接返回历史回答（带标识）
+            // 1. 语义缓存
             float[] queryVector = ragService.embed(userId, question);
             var cached = semanticCacheService.lookup(queryVector);
             if (cached.isPresent()) {
@@ -69,22 +73,25 @@ public class ChatService {
                 return;
             }
 
-            // 2. RAG 混合检索
+            // 2. RAG 检索
             RagResult rag = ragService.retrieve(userId, question);
 
-            // 3. 置信度路由：知识库答不了 -> 代码检索 + LLM 兜底
-            //    （原工单 Agent 流程已在 DevKnow 裁撤，替换为代码审查 Agent）
+            // 3. 置信度路由
             if (rag.getConfidence() < confidenceThreshold) {
-                log.info("low confidence {}, route to code fallback", rag.getConfidence());
-                // Phase 1：尝试代码检索，没有命中再由 LLM 直接回答
-                // Phase 3 接入多源检索 + 代码审查 Agent
-                llmStreamingService.generateWithFallback(userId, conversationId, question, rag, emitter, closed, queryVector);
+                log.info("置信度不足 ({} < {}), 路由到代码审查 Agent",
+                        String.format("%.3f", rag.getConfidence()), confidenceThreshold);
+                send(emitter, closed, "source", ragService.buildContext(rag.getChunks()));
+                String agentReply = codeReviewAgentService.analyze(
+                        userId, projectId, conversationId, question);
+                send(emitter, closed, "token", agentReply);
+                send(emitter, closed, "done", "");
+                emitter.complete();
                 return;
             }
 
-            // 4. 流式生成（信号量控制 LLM 并发 + 熔断降级）。
-            //    跨 Bean 调用，确保 @CircuitBreaker 代理生效。
-            llmStreamingService.generateWithFallback(userId, conversationId, question, rag, emitter, closed, queryVector);
+            // 4. 高置信 → LLM 流式生成
+            llmStreamingService.generateWithFallback(
+                    userId, conversationId, question, rag, emitter, closed, queryVector);
 
         } catch (Exception e) {
             log.error("chat failed", e);
@@ -98,7 +105,7 @@ public class ChatService {
         try {
             emitter.send(SseEmitter.event().name(event).data(data));
         } catch (IOException | IllegalStateException e) {
-            closed.set(true);   // 写失败视为断连，停止后续推送
+            closed.set(true);
         }
     }
 }
