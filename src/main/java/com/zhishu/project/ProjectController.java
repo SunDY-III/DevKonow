@@ -48,30 +48,35 @@ public class ProjectController {
     @PostMapping("/import")
     public SseEmitter importProject(@RequestParam String repoUrl,
                                      @RequestParam(defaultValue = "false") boolean force,
-                                     @RequestParam(required = false) String token) {
-        SseEmitter emitter = new SseEmitter(300_000L);  // 5 分钟超时
-        projectImportService.importFromRepo(repoUrl, force, token, emitter);
+                                     @RequestParam(required = false) String token,
+                                     @RequestParam(required = false) String sshKey) {
+        SseEmitter emitter = new SseEmitter(300_000L);
+        boolean isSsh = sshKey != null && !sshKey.isBlank();
+        projectImportService.importFromRepo(repoUrl, force, isSsh ? sshKey : token, isSsh, emitter);
         return emitter;
     }
 
     /**
-     * 验证仓库地址和 Token 是否有效。
-     * 在真正导入前调用，用户确认后再调 /import。
-     * <p>
+     * 验证仓库地址和凭证是否有效。
+     * 支持 Token 和 SSH Key 两种认证方式。
      * 成功返回仓库状态，失败返回具体错误码：
      *   REPO_NOT_FOUND → 地址错误
-     *   PERMISSION_DENIED → Token 无效
+     *   PERMISSION_DENIED → Token 已过期 / 权限不足
      *   NETWORK_ERROR → 网络不可达
      */
     @PostMapping("/verify")
     public ApiResponse<Map<String, Object>> verifyRepo(@RequestParam String repoUrl,
-                                                        @RequestParam(required = false) String token) {
+                                                        @RequestParam(required = false) String token,
+                                                        @RequestParam(required = false) String sshKey) {
         try {
-            String result = gitRepoManager.verifyRepo(repoUrl, token);
+            boolean isSsh = sshKey != null && !sshKey.isBlank();
+            String result = gitRepoManager.verifyRepo(repoUrl, isSsh ? sshKey : token, isSsh);
             String repoName = GitRepoManager.extractRepoName(repoUrl);
+            String authType = isSsh ? "SSH Key" : "Token";
             return ApiResponse.ok(Map.of(
                     "valid", true,
                     "repoName", repoName,
+                    "authType", authType,
                     "detail", result,
                     "message", "仓库可访问，请确认地址后开始导入"
             ));
@@ -95,7 +100,7 @@ public class ProjectController {
             emitter.complete();
             return emitter;
         }
-        return importProject(repoUrls.get(0), false, null);
+        return importProject(repoUrls.get(0), false, null, null);
     }
 
     /**
@@ -116,7 +121,7 @@ public class ProjectController {
             return emitter;
         }
         // 强制重新索引
-        return importProject(repoUrl, true, null);
+        return importProject(repoUrl, true, null, null);
     }
 
     private String extractFirstRepoUrl(CodeProject project) {

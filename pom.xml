@@ -155,6 +155,11 @@
             <artifactId>org.eclipse.jgit</artifactId>
             <version>6.9.0.202403050737-r</version>
         </dependency>
+        <dependency>
+            <groupId>org.eclipse.jgit</groupId>
+            <artifactId>org.eclipse.jgit.ssh.apache</artifactId>
+            <version>6.9.0.202403050737-r</version>
+        </dependency>
 
         <!-- Milvus 向量数据库 -->
         <dependency>

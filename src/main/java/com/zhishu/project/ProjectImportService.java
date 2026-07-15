@@ -84,7 +84,8 @@ public class ProjectImportService {
     // ======================== 导入入口 ========================
 
     @Async
-    public void importFromRepo(String repoUrl, boolean forceReindex, String token, SseEmitter emitter) {
+    public void importFromRepo(String repoUrl, boolean forceReindex, String credential,
+                                boolean isSshKey, SseEmitter emitter) {
         AtomicBoolean closed = new AtomicBoolean(false);
         emitter.onCompletion(() -> closed.set(true));
         emitter.onTimeout(() -> closed.set(true));
@@ -108,9 +109,9 @@ public class ProjectImportService {
             }
 
             if (existingProject != null && forceReindex) {
-                handleReindex(existingProject, repoName, repoUrl, token, emitter, closed);
+                handleReindex(existingProject, repoName, repoUrl, credential, isSshKey, emitter, closed);
             } else {
-                handleFreshImport(repoName, repoUrl, token, emitter, closed);
+                handleFreshImport(repoName, repoUrl, credential, isSshKey, emitter, closed);
             }
 
         } catch (GitException e) {
@@ -130,11 +131,11 @@ public class ProjectImportService {
 
     // ======================== 模式 A：首次导入 ========================
 
-    private void handleFreshImport(String repoName, String repoUrl, String token,
-                                    SseEmitter emitter, AtomicBoolean closed) {
+    private void handleFreshImport(String repoName, String repoUrl, String credential,
+                                     boolean isSshKey, SseEmitter emitter, AtomicBoolean closed) {
         sendProgress(emitter, closed, "cloning", "正在克隆仓库...", 10);
         Path localPath = gitRepoManager.getRepoPath(0L, repoName);
-        gitRepoManager.clone(repoUrl, localPath, token);
+        gitRepoManager.clone(repoUrl, localPath, credential, isSshKey);
         sendProgress(emitter, closed, "cloned", "仓库克隆完成", 25);
 
         sendProgress(emitter, closed, "scanning", "正在扫描项目结构...", 30);
@@ -171,7 +172,8 @@ public class ProjectImportService {
     // ======================== 模式 B：重新索引 ========================
 
     private void handleReindex(CodeProject project, String repoName, String repoUrl,
-                                String token, SseEmitter emitter, AtomicBoolean closed) {
+                                String credential, boolean isSshKey,
+                                SseEmitter emitter, AtomicBoolean closed) {
         Long projectId = project.getId();
 
         // === Redis 分布式锁：防止并发重建同一项目 ===
@@ -185,7 +187,7 @@ public class ProjectImportService {
             Path localPath = gitRepoManager.getRepoPath(projectId != null ? projectId : 0L, repoName);
 
             if (!localPath.toFile().exists()) {
-                gitRepoManager.clone(repoUrl, localPath, token);
+                gitRepoManager.clone(repoUrl, localPath, credential, isSshKey);
             } else {
                 gitRepoManager.pull(localPath);
             }

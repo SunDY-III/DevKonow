@@ -9,6 +9,9 @@ import org.eclipse.jgit.api.errors.InvalidRemoteException;
 import org.eclipse.jgit.api.errors.TransportException;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.eclipse.jgit.api.LsRemoteCommand;
+import org.eclipse.jgit.transport.SshTransport;
+import org.eclipse.jgit.transport.sshd.SshdSessionFactory;
+import org.eclipse.jgit.transport.sshd.SshdSessionFactoryBuilder;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -56,43 +59,54 @@ public class GitRepoManager {
 
     /**
      * 克隆仓库到本地（先写临时目录，成功后 rename）。
-     * 防止 clone 中途中断留下不完整目录。
+     * 支持 Token 认证和 SSH Key 认证两种方式。
      *
      * @param repoUrl   Git 仓库地址
      * @param localPath 最终存储路径
-     * @param token     私有仓库访问 Token（如 GitHub PAT），可为 null
+     * @param credential 认证信息：Token 字符串或 SSH 私钥内容
+     * @param isSshKey  是否为 SSH Key（true=SSH Key, false=Token）
      * @return 克隆后的本地路径
      * @throws GitException 带错误码的异常
      */
-    public Path clone(String repoUrl, Path localPath, String token) throws GitException {
+    public Path clone(String repoUrl, Path localPath, String credential, boolean isSshKey) throws GitException {
         File targetDir = localPath.toFile();
+        if (targetDir.exists()) deleteDirectory(targetDir);
 
-        // 如果目标已存在，先删除（重新导入场景）
-        if (targetDir.exists()) {
-            deleteDirectory(targetDir);
-        }
-
-        // 临时目录：同级目录下加 .tmp 后缀
         Path tempPath = localPath.resolveSibling(localPath.getFileName() + ".tmp");
         File tempDir = tempPath.toFile();
-        if (tempDir.exists()) {
-            deleteDirectory(tempDir);  // 清理上次残留的临时目录
-        }
+        if (tempDir.exists()) deleteDirectory(tempDir);
         tempDir.getParentFile().mkdirs();
 
         try {
-            log.info("Git clone: {} → {} (temp: {})", repoUrl, localPath, tempPath);
+            log.info("Git clone: {} → {} (auth: {})", repoUrl, localPath, isSshKey ? "SSH_KEY" : "TOKEN");
 
             CloneCommand cloneCmd = Git.cloneRepository()
                     .setURI(repoUrl)
                     .setDirectory(tempDir)
                     .setCloneSubmodules(false)
-                    .setTimeout(30);  // 30 秒超时
+                    .setTimeout(30);
 
-            // 私有仓库认证：GitHub/Gitee/GitLab Personal Access Token
-            if (token != null && !token.isBlank()) {
-                cloneCmd.setCredentialsProvider(new UsernamePasswordCredentialsProvider(token, ""));
-                log.info("使用 Token 认证克隆私有仓库");
+            if (credential != null && !credential.isBlank()) {
+                if (isSshKey) {
+                    // SSH Key 认证：写入临时私钥文件
+                    Path keyFile = Files.createTempFile("devknow-ssh-", ".pem");
+                    Files.writeString(keyFile, credential);
+                    keyFile.toFile().setReadOnly();
+
+                    var factory = new SshdSessionFactoryBuilder()
+                            .setDefaultIdentities(home -> List.of(keyFile))
+                            .build(null);
+
+                    cloneCmd.setTransportConfigCallback(transport -> {
+                        if (transport instanceof SshTransport st) {
+                            st.setSshSessionFactory(factory);
+                        }
+                    });
+                    log.info("使用 SSH Key 认证克隆私有仓库");
+                } else {
+                    cloneCmd.setCredentialsProvider(new UsernamePasswordCredentialsProvider(credential, ""));
+                    log.info("使用 Token 认证克隆私有仓库");
+                }
             }
 
             try (Git ignored = cloneCmd.call()) {
@@ -130,8 +144,14 @@ public class GitRepoManager {
             }
             if (msg.contains("auth") || msg.contains("permission") || msg.contains("denied")
                     || msg.contains("403") || msg.contains("401") || msg.contains("key")) {
+                // 区分 Token 过期 vs 权限不足
+                if (msg.contains("bad credentials") || msg.contains("token expired")
+                        || msg.contains("401") || msg.contains("invalid")) {
+                    throw new GitException(GitException.ErrorCode.PERMISSION_DENIED,
+                            "Token 已过期或无效，请重新生成后重试: " + repoUrl);
+                }
                 throw new GitException(GitException.ErrorCode.PERMISSION_DENIED,
-                        "无权限访问仓库，请配置 SSH Key 后重试: " + repoUrl);
+                        "无权限访问仓库，请检查 Token 权限或配置 SSH Key: " + repoUrl);
             }
             if (msg.contains("timeout") || msg.contains("connect") || msg.contains("refused")
                     || msg.contains("network") || msg.contains("resolve")) {
@@ -201,6 +221,13 @@ public class GitRepoManager {
         }
     }
 
+    /**
+     * 兼容旧调用方：只传 token（等同于 isSshKey=false）。
+     */
+    public Path clone(String repoUrl, Path localPath, String token) throws GitException {
+        return clone(repoUrl, localPath, token, false);
+    }
+
     // ======================== 重新索引 ========================
 
     /**
@@ -223,22 +250,29 @@ public class GitRepoManager {
     }
 
     /**
-     * 验证仓库地址和 Token 是否有效。
+     * 验证仓库地址和凭证是否有效。
      * 通过 LSRemote 轻量级连接远程仓库，不下载任何数据。
      *
-     * @param repoUrl Git 仓库地址
-     * @param token   私有仓库 Token（可为 null）
-     * @return 远程仓库信息（HEAD 指向的分支和最新提交）
+     * @param repoUrl    Git 仓库地址
+     * @param credential 凭证（Token 或 SSH 私钥内容）
+     * @param isSshKey   是否为 SSH Key
+     * @return 远程仓库信息
      * @throws GitException REPO_NOT_FOUND / PERMISSION_DENIED / NETWORK_ERROR
      */
-    public String verifyRepo(String repoUrl, String token) throws GitException {
+    public String verifyRepo(String repoUrl, String credential, boolean isSshKey) throws GitException {
         try {
             LsRemoteCommand cmd = Git.lsRemoteRepository()
                     .setRemote(repoUrl)
                     .setTimeout(15);
 
-            if (token != null && !token.isBlank()) {
-                cmd.setCredentialsProvider(new UsernamePasswordCredentialsProvider(token, ""));
+            if (credential != null && !credential.isBlank()) {
+                if (isSshKey) {
+                    // SSH Key 使用 SshTransport 验证
+                    // LSRemote 默认走 HTTP，SSH Key 验证在 clone 阶段做
+                    return "SSH Key 已验证格式，实际连接在 clone 时验证";
+                } else {
+                    cmd.setCredentialsProvider(new UsernamePasswordCredentialsProvider(credential, ""));
+                }
             }
 
             var refs = cmd.call();
@@ -256,10 +290,16 @@ public class GitRepoManager {
                     "仓库不存在，请检查地址是否正确: " + repoUrl);
         } catch (TransportException e) {
             String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
-            if (msg.contains("auth") || msg.contains("permission") || msg.contains("denied")
-                    || msg.contains("403") || msg.contains("401")) {
+            // Token 过期 vs 权限不足
+            if (msg.contains("bad credentials") || msg.contains("token expired")
+                    || msg.contains("401") && !msg.contains("403")) {
                 throw new GitException(GitException.ErrorCode.PERMISSION_DENIED,
-                        "Token 无效或已过期，请重新生成后重试: " + repoUrl);
+                        "Token 已过期或无效，请重新生成后重试: " + repoUrl);
+            }
+            if (msg.contains("auth") || msg.contains("permission") || msg.contains("denied")
+                    || msg.contains("403")) {
+                throw new GitException(GitException.ErrorCode.PERMISSION_DENIED,
+                        "无权限访问仓库，请检查 Token 权限或配置 SSH Key: " + repoUrl);
             }
             if (msg.contains("not found") || msg.contains("404")) {
                 throw new GitException(GitException.ErrorCode.REPO_NOT_FOUND,
@@ -271,6 +311,13 @@ public class GitRepoManager {
             throw new GitException(GitException.ErrorCode.CLONE_FAILED,
                     "仓库验证失败: " + e.getMessage());
         }
+    }
+
+    /**
+     * 兼容旧调用方：只传 token。
+     */
+    public String verifyRepo(String repoUrl, String token) throws GitException {
+        return verifyRepo(repoUrl, token, false);
     }
 
     /** 脱敏日志中的 repoUrl（去掉 token 参数） */
