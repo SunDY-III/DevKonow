@@ -14,9 +14,11 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -40,6 +42,44 @@ public class ProjectImportService {
 
     /** 正在导入中的仓库 URL（防重复导入） */
     private final Set<String> importingUrls = Collections.newSetFromMap(new ConcurrentHashMap<>());
+
+    /** Redis 锁前缀：lock:reindex:{projectId} */
+    private static final String LOCK_PREFIX = "lock:reindex:";
+
+    // ======================== Redis 分布式锁 ========================
+
+    /**
+     * 尝试获取项目重建锁（SET NX EX 30）。
+     * 同一时间只允许一个线程重建同一项目，多实例间也互斥。
+     *
+     * @param projectId 项目 ID
+     * @return 锁标识（解锁时需要），获取失败返回 null
+     */
+    private String tryReindexLock(Long projectId) {
+        if (projectId == null) return null;
+        String lockKey = LOCK_PREFIX + projectId;
+        String lockValue = UUID.randomUUID().toString();  // 唯一标识，解锁时校验
+        Boolean locked = redis.opsForValue().setIfAbsent(lockKey, lockValue, Duration.ofSeconds(30));
+        if (Boolean.TRUE.equals(locked)) {
+            log.debug("获锁: projectId={}", projectId);
+            return lockValue;
+        }
+        log.debug("锁已被占用: projectId={}", projectId);
+        return null;
+    }
+
+    /**
+     * 释放项目重建锁（Lua 脚本安全释放，只删除属于自己的锁）。
+     */
+    private void releaseReindexLock(Long projectId, String lockValue) {
+        if (projectId == null || lockValue == null) return;
+        String lockKey = LOCK_PREFIX + projectId;
+        // Lua 脚本：比较 value 一致才删除，防止误删其他线程的锁
+        String lua = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
+        redis.execute(new org.springframework.data.redis.core.script.DefaultRedisScript<>(lua, Long.class),
+                List.of(lockKey), lockValue);
+        log.debug("释放锁: projectId={}", projectId);
+    }
 
     // ======================== 导入入口 ========================
 
@@ -133,35 +173,55 @@ public class ProjectImportService {
     private void handleReindex(CodeProject project, String repoName, String repoUrl,
                                 String token, SseEmitter emitter, AtomicBoolean closed) {
         Long projectId = project.getId();
-        sendProgress(emitter, closed, "pulling", "正在拉取最新代码...", 10);
-        Path localPath = gitRepoManager.getRepoPath(projectId != null ? projectId : 0L, repoName);
 
-        if (!localPath.toFile().exists()) {
-            gitRepoManager.clone(repoUrl, localPath, token);
-        } else {
-            gitRepoManager.pull(localPath);
+        // === Redis 分布式锁：防止并发重建同一项目 ===
+        String lockValue = tryReindexLock(projectId);
+        if (lockValue == null) {
+            sendError(emitter, closed, "LOCKED", "项目正在重建中，请稍后再试");
+            return;
         }
-        sendProgress(emitter, closed, "pulled", "代码已更新", 25);
+        try {
+            sendProgress(emitter, closed, "pulling", "正在拉取最新代码...", 10);
+            Path localPath = gitRepoManager.getRepoPath(projectId != null ? projectId : 0L, repoName);
 
-        String lastCommit = gitRepoManager.getLastIndexedCommit(projectId, redis);
-        redis.opsForValue().set("index:status:" + projectId, "INDEXING");
+            if (!localPath.toFile().exists()) {
+                gitRepoManager.clone(repoUrl, localPath, token);
+            } else {
+                gitRepoManager.pull(localPath);
+            }
 
-        if (lastCommit == null) {
-            sendProgress(emitter, closed, "indexing", "全量索引...", 30);
-            int methodCount = codeIndexService.indexProject(projectId, repoName, localPath, emitter, closed);
-            project.setTotalMethods(methodCount);
-        } else {
-            sendProgress(emitter, closed, "diffing", "检测变更...", 35);
-            List<String> changedFiles = gitRepoManager.diffChangedFiles(localPath, lastCommit);
-            sendProgress(emitter, closed, "diffed", String.format("检测到 %d 个变更", changedFiles.size()), 45);
-            sendProgress(emitter, closed, "indexing", "波及重建...", 55);
-            codeIndexService.indexIncremental(projectId, repoName, localPath, changedFiles);
+            // === HEAD 无变化检查：跳过重建 ===
+            String currentHead = gitRepoManager.getHeadCommitHash(localPath);
+            String lastCommit = gitRepoManager.getLastIndexedCommit(projectId, redis);
+            if (currentHead != null && currentHead.equals(lastCommit)) {
+                sendProgress(emitter, closed, "skipped", "代码已是最新，无需重建", 100);
+                sendProjectEvent(emitter, closed, project);
+                return;
+            }
+
+            sendProgress(emitter, closed, "pulled", "代码已更新", 25);
+            redis.opsForValue().set("index:status:" + projectId, "INDEXING");
+
+            if (lastCommit == null) {
+                sendProgress(emitter, closed, "indexing", "全量索引...", 30);
+                int methodCount = codeIndexService.indexProject(projectId, repoName, localPath, emitter, closed);
+                project.setTotalMethods(methodCount);
+            } else {
+                sendProgress(emitter, closed, "diffing", "检测变更...", 35);
+                List<String> changedFiles = gitRepoManager.diffChangedFiles(localPath, lastCommit);
+                sendProgress(emitter, closed, "diffed", String.format("检测到 %d 个变更", changedFiles.size()), 45);
+                sendProgress(emitter, closed, "indexing", "波及重建...", 55);
+                codeIndexService.indexIncremental(projectId, repoName, localPath, changedFiles);
+            }
+
+            projectRepository.save(project);
+            redis.delete("index:status:" + projectId);
+            sendProgress(emitter, closed, "done", "重新索引完成！", 100);
+            sendProjectEvent(emitter, closed, project);
+
+        } finally {
+            releaseReindexLock(projectId, lockValue);
         }
-
-        projectRepository.save(project);
-        redis.delete("index:status:" + projectId);
-        sendProgress(emitter, closed, "done", "重新索引完成！", 100);
-        sendProjectEvent(emitter, closed, project);
     }
 
     // ======================== 删除项目 ========================
