@@ -1,13 +1,47 @@
-* { box-sizing: border-box; margin: 0; }
+/* ── Coral Warm Theme — Claude-inspired · Sourcegraph-like ── */
+*,
+*::before,
+*::after { box-sizing: border-box; margin: 0; padding: 0; }
+
 html, body { height: 100%; }
+
 body {
-  font-family: "PingFang SC", "Microsoft YaHei", -apple-system, "Segoe UI", sans-serif;
-  background: #f4f3ee;
-  color: #1f1e1c;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", "Noto Sans", sans-serif;
+  background: #faf9f5;
+  color: #2d2a24;
   font-size: 14px;
+  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
+
 #app { height: 100%; }
-a { color: #c15f3c; }
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-thumb { background: #e8e3d8; border-radius: 3px; }
+
+a {
+  color: #c15f3c;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+a:hover { color: #d47a4a; }
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #ddd8cc;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover { background: #c9c3b5; }
+
+/* ── Selection ── */
+::selection {
+  background: #c15f3c44;
+  color: #2d2a24;
+}
+
+/* ── Utility ── */
+.text-muted { color: #8a857a; }
+.text-coral { color: #c15f3c; }
+.text-sm { font-size: 12px; }
+.text-xs { font-size: 11px; }
