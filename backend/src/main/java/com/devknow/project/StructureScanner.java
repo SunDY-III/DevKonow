@@ -11,23 +11,10 @@ import java.nio.file.Path;
 import java.util.*;
 import java.util.stream.Stream;
 
-/**
- * 项目结构自动扫描器。
- *
- * <p>扫描本地 Git 仓库目录，自动检测：
- * <ul>
- *   <li>主语言（按文件后缀统计）</li>
- *   <li>构建工具（检测 pom.xml / build.gradle / go.mod 等）</li>
- *   <li>框架（扫描源码中的关键注解和导入）</li>
- *   <li>入口点（main 方法、@SpringBootApplication 等）</li>
- *   <li>模块结构（按顶层包/目录聚类）</li>
- * </ul>
- */
 @Slf4j
 @Component
 public class StructureScanner {
 
-    /** 构建工具检测文件 */
     private static final Map<String, String> BUILD_TOOL_FILES = Map.of(
             "pom.xml", "Maven",
             "build.gradle", "Gradle",
@@ -40,7 +27,6 @@ public class StructureScanner {
             "CMakeLists.txt", "CMake"
     );
 
-    /** 后缀 → 语言名 */
     private static final Map<String, String> EXT_TO_LANG = buildExtToLang();
 
     private static Map<String, String> buildExtToLang() {
@@ -57,15 +43,8 @@ public class StructureScanner {
         return Collections.unmodifiableMap(m);
     }
 
-    /** 最大扫描文件数（防止超大型项目卡死） */
     private static final int MAX_SCAN_FILES = 50_000;
 
-    /**
-     * 扫描项目目录。
-     *
-     * @param repoPath 本地仓库路径
-     * @return 项目结构信息
-     */
     public ProjectStructure scan(Path repoPath) {
         File root = repoPath.toFile();
         if (!root.exists() || !root.isDirectory()) {
@@ -74,7 +53,6 @@ public class StructureScanner {
         }
 
         try {
-            // 收集所有文件
             List<File> allFiles = new ArrayList<>();
             try (Stream<Path> paths = Files.walk(repoPath)) {
                 paths.filter(Files::isRegularFile)
@@ -82,15 +60,12 @@ public class StructureScanner {
                      .forEach(p -> allFiles.add(p.toFile()));
             }
 
-            // 跳过 .git 目录和其他隐藏目录
             List<FileInfo> files = new ArrayList<>();
             Map<String, Integer> langCounts = new HashMap<>();
 
             for (File f : allFiles) {
                 String relPath = repoPath.relativize(f.toPath()).toString().replace('\\', '/');
-                // 跳过 .git 和隐藏目录
                 if (relPath.startsWith(".git/") || relPath.startsWith(".")) continue;
-                // 跳过 node_modules、target 等构建产物
                 if (relPath.contains("/node_modules/") || relPath.contains("/target/")
                         || relPath.contains("/dist/") || relPath.contains("/build/")
                         || relPath.contains("/.next/") || relPath.contains("/vendor/")
@@ -98,35 +73,23 @@ public class StructureScanner {
 
                 String name = f.getName();
                 String ext = name.contains(".") ? name.substring(name.lastIndexOf('.') + 1).toLowerCase() : "";
-                // dockerfile 特殊处理
                 if (name.equalsIgnoreCase("dockerfile")) ext = "dockerfile";
 
                 files.add(FileInfo.builder()
-                        .path(relPath)
-                        .fileName(name)
-                        .extension(ext)
-                        .sizeBytes(f.length())
+                        .path(relPath).fileName(name).extension(ext).sizeBytes(f.length())
                         .build());
 
                 langCounts.merge(EXT_TO_LANG.getOrDefault(ext, ext), 1, Integer::sum);
             }
 
-            // 确定主语言
             String mainLanguage = langCounts.entrySet().stream()
                     .max(Map.Entry.comparingByValue())
                     .map(Map.Entry::getKey)
                     .orElse("Unknown");
 
-            // 检测构建工具
             String buildTool = detectBuildTool(root);
-
-            // 检测框架
             String framework = detectFramework(files, buildTool, mainLanguage);
-
-            // 查找入口点
             List<String> entryPoints = findEntryPoints(files, mainLanguage, root);
-
-            // 检测模块结构
             List<ModuleInfo> modules = detectModules(files);
 
             log.info("项目扫描完成: {} 文件, 主语言={}, 构建工具={}, 框架={}",
@@ -150,13 +113,11 @@ public class StructureScanner {
     }
 
     private String detectBuildTool(File root) {
-        // 检查项目根目录是否有构建工具特征文件
         for (Map.Entry<String, String> entry : BUILD_TOOL_FILES.entrySet()) {
             if (new File(root, entry.getKey()).exists()) {
                 return entry.getValue();
             }
         }
-        // 递归检查子目录（多模块项目可能在子模块中有 pom.xml）
         File[] subDirs = root.listFiles(File::isDirectory);
         if (subDirs != null) {
             for (File dir : subDirs) {
@@ -173,30 +134,23 @@ public class StructureScanner {
     }
 
     private String detectFramework(List<FileInfo> files, String buildTool, String mainLanguage) {
-        // 根据语言和构建工具推断框架
         if ("Maven".equals(buildTool) || "Gradle".equals(buildTool)) {
-            // 检查是否有 Spring Boot 特征文件
             for (FileInfo f : files) {
                 String name = f.getFileName().toLowerCase();
-                if (name.contains("springbootapplication")
-                        || name.contains("springapplication")) {
+                if (name.contains("springbootapplication") || name.contains("springapplication")) {
                     return "Spring Boot";
                 }
                 if (name.equals("pom.xml")) {
-                    // 简单检测 pom.xml 中是否有 spring-boot-starter
                     try {
                         String content = new String(
                                 Files.readAllBytes(Path.of(f.getPath())), StandardCharsets.UTF_8);
-                        if (content.contains("spring-boot-starter")) {
-                            return "Spring Boot";
-                        }
+                        if (content.contains("spring-boot-starter")) return "Spring Boot";
                     } catch (IOException ignored) {}
                 }
             }
             return "Java";
         }
         if ("Go Mod".equals(buildTool)) {
-            // Go 项目常见框架
             for (FileInfo f : files) {
                 if (f.getExtension().equals("go")) {
                     try {
@@ -210,6 +164,21 @@ public class StructureScanner {
                 }
             }
             return "Go";
+        }
+        // 无构建文件时的降级检测：按语言后缀推断框架
+        if (buildTool == null) {
+            if ("Java".equals(mainLanguage)) {
+                for (FileInfo f : files) {
+                    if (f.getFileName().toLowerCase().contains("springbootapplication")
+                            || f.getFileName().toLowerCase().contains("springapplication")) {
+                        return "Spring Boot";
+                    }
+                }
+                return "Java";
+            }
+            if ("Python".equals(mainLanguage)) return "Python";
+            if ("JavaScript".equals(mainLanguage) || "TypeScript".equals(mainLanguage)) return "Node.js";
+            if ("Go".equals(mainLanguage)) return "Go";
         }
         return null;
     }
@@ -235,46 +204,30 @@ public class StructureScanner {
     }
 
     private List<ModuleInfo> detectModules(List<FileInfo> files) {
-        // 按顶层源码目录聚类（如 src/main/java/com/trade/controller → controller）
         Map<String, Integer> moduleCounts = new LinkedHashMap<>();
-
         for (FileInfo f : files) {
             String path = f.getPath();
             String[] parts = path.split("/");
-
-            // 寻找 src/main/java、src/main/kotlin 或 cmd/ 等典型源码根目录后的第一级
             for (int i = 0; i < parts.length - 1; i++) {
                 if (parts[i].equals("src") && i + 2 < parts.length
                         && (parts[i+1].equals("main") || parts[i+1].equals("test"))) {
-                    // src/main/java/com/trade/controller/OrderController.java
-                    // → 取 "src/main/java" 后的第三段（controller）
                     if (i + 4 < parts.length) {
                         String module = parts[i + 4];
                         moduleCounts.merge(module, 1, Integer::sum);
                     }
                     break;
                 }
-                // Go 项目: cmd/api/main.go → 取 "cmd" 之后的段
                 if (parts[i].equals("cmd") && i + 1 < parts.length) {
                     moduleCounts.merge("cmd/" + parts[i + 1], 1, Integer::sum);
                     break;
                 }
-                // Python: project_name/module_name/__init__.py
-                if (parts[i].endsWith(".py") && i > 0) {
-                    // 简单处理：取上一级目录名
-                }
             }
         }
-
-        // 只保留文件数 >= 3 的模块，按文件数降序排列
         return moduleCounts.entrySet().stream()
                 .filter(e -> e.getValue() >= 3)
                 .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
-                .limit(10)  // 最多 10 个模块
-                .map(e -> ModuleInfo.builder()
-                        .name(e.getKey())
-                        .fileCount(e.getValue())
-                        .build())
+                .limit(10)
+                .map(e -> ModuleInfo.builder().name(e.getKey()).fileCount(e.getValue()).build())
                 .toList();
     }
 }

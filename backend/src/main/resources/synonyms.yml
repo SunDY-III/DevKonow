@@ -15,10 +15,20 @@
 异常: exception, error, fault, throwable
 缓存: cache, redis, memcached, buffer
 队列: queue, mq, message, rabbitmq, kafka
-订单: order, dingdan, ord
-用户: user, usr
-支付: pay, zhifu
-查询: query, get, find, search
-创建: create, add, new
-更新: update, modify, edit
-删除: delete, remove
+# ========== 拼音/缩写覆盖（针对非规范命名仓库） ==========
+zhifu: 支付, pay, payment
+jine: 金额, amount, money
+zhuangtai: 状态, status, state
+dingdan: 订单, order
+chuli: 处理, handle, process
+xinxi: 信息, info, information
+fuwu: 服务, service
+yonghu: 用户, user
+quanxian: 权限, permission, auth
+peizhi: 配置, config, setting
+shuju: 数据, data
+baocun: 保存, save, store
+tijiao: 提交, submit, commit
+shengcheng: 生成, generate, create
+chaxun: 查询, query, search
+shijian: 时间, time, date
