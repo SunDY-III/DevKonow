@@ -7,10 +7,6 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/**
- * 规则重排序的单元测试。
- * 核心行为：RRF 分基础上 + 查询词命中数加权，再取 TopN。
- */
 class RerankerTest {
 
     private final Reranker reranker = new Reranker();
@@ -26,7 +22,6 @@ class RerankerTest {
             chunk(1L, 0.5, "今天天气很好"),
             chunk(2L, 0.5, "张三的工单")
         );
-        // "张三" 应该命中第二个
         List<ScoredChunk> result = reranker.rerank("张三", candidates, 2);
         assertEquals(2L, result.get(0).getChunkId());
         assertTrue(result.get(0).getScore() > 0.5);
@@ -43,6 +38,6 @@ class RerankerTest {
     }
 
     private static ScoredChunk chunk(Long id, double score, String content) {
-        return new ScoredChunk(id, 1L, 0, "test.txt", content, score);
+        return new ScoredChunk(id, 1L, 0, "test.txt", content, score, "");
     }
 }

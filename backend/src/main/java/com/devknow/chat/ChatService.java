@@ -15,20 +15,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * 对话主链路（LLM 路由版）。
- *
- * <p>路由决策：
- * <ol>
- *   <li>敏感词过滤</li>
- *   <li>语义缓存命中 → 直接返回</li>
- *   <li>LLM 分类问题 → code/doc/both/unknown</li>
- *   <li>按分类走对应通道 → 置信度路由 → LLM 生成 / Agent 兜底</li>
- * </ol>
- */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -74,11 +66,8 @@ public class ChatService {
                 return;
             }
 
-            // === LLM 路由：判断问题类型 ===
             String route = classifyQuestion(question);
             log.info("LLM 路由结果: route={}, q={}", route, question);
-
-            // 推送路由信息到前端
             send(emitter, closed, "route", route);
 
             switch (route) {
@@ -95,12 +84,6 @@ public class ChatService {
         }
     }
 
-    // ======================== LLM 路由分类 ========================
-
-    /**
-     * 用 LLM 判断问题属于哪个通道。
-     * 一次极短的 LLM 调用（~50 token 输入，1 token 输出）。
-     */
     private String classifyQuestion(String question) {
         String response = chatModel.generate("""
                 你是一个路由分类器。判断用户问题应该搜索哪个数据源。
@@ -120,9 +103,6 @@ public class ChatService {
         return "unknown";
     }
 
-    // ======================== 路由处理 ========================
-
-    /** 代码通道：搜方法定义、调用链、代码变更 */
     private void handleCodeRoute(Long userId, String conversationId, String question,
                                   float[] queryVector, SseEmitter emitter, AtomicBoolean closed) {
         try {
@@ -139,7 +119,6 @@ public class ChatService {
         }
     }
 
-    /** 文档通道：搜设计文档、接口协议 */
     private void handleDocRoute(Long userId, String conversationId, String question,
                                  float[] queryVector, SseEmitter emitter, AtomicBoolean closed) {
         try {
@@ -155,27 +134,44 @@ public class ChatService {
         }
     }
 
-    /** 双通道融合：代码 + 文档同时搜，RRF 融合 */
+    /** 双通道融合：代码 + 文档同时搜，合并后交 LLM 自行判断 */
     private void handleBothRoute(Long userId, String conversationId, String question,
                                   float[] queryVector, SseEmitter emitter, AtomicBoolean closed) {
         try {
             List<ScoredChunk> codeResults = ragService.retrieveCode(userId, question);
-            RagResult docResults = ragService.retrieve(userId, question);
-            if (!codeResults.isEmpty() && codeResults.get(0).getScore() >= confidenceThreshold) {
-                RagResult rag = new RagResult(codeResults, codeResults.get(0).getScore());
-                llmStreamingService.generateWithFallback(userId, conversationId, question, rag, emitter, closed, queryVector);
-            } else if (docResults.getConfidence() >= confidenceThreshold) {
-                llmStreamingService.generateWithFallback(userId, conversationId, question, docResults, emitter, closed, queryVector);
-            } else {
-                handleAgentRoute(userId, conversationId, question, emitter, closed);
+            RagResult docResults = ragService.levelAwareRetrieve(userId, question);
+
+            Set<Long> seenIds = new HashSet<>();
+            List<ScoredChunk> merged = new ArrayList<>();
+            if (codeResults != null) {
+                for (ScoredChunk c : codeResults) {
+                    if (seenIds.add(c.getChunkId())) merged.add(c);
+                }
             }
+            if (docResults.getChunks() != null) {
+                for (ScoredChunk c : docResults.getChunks()) {
+                    if (seenIds.add(c.getChunkId())) merged.add(c);
+                }
+            }
+
+            if (merged.isEmpty()) {
+                handleAgentRoute(userId, conversationId, question, emitter, closed);
+                return;
+            }
+
+            // 不设阈值截断，由 LLM 自行判断哪些内容有用
+            double confidence = Math.max(
+                    codeResults.isEmpty() ? 0 : codeResults.get(0).getScore(),
+                    docResults.getConfidence());
+            RagResult combined = new RagResult(merged, confidence);
+            llmStreamingService.generateWithFallback(userId, conversationId, question, combined, emitter, closed, queryVector);
+
         } catch (Exception e) {
             log.warn("both route failed", e);
             handleAgentRoute(userId, conversationId, question, emitter, closed);
         }
     }
 
-    /** Agent 兜底：搜不到时直接分析代码 */
     private void handleAgentRoute(Long userId, String conversationId, String question,
                                    SseEmitter emitter, AtomicBoolean closed) {
         String agentReply = codeReviewAgentService.analyze(userId, projectId, conversationId, question);
@@ -184,8 +180,6 @@ public class ChatService {
         send(emitter, closed, "done", "");
         emitter.complete();
     }
-
-    // ======================== SSE 推送 ========================
 
     private void send(SseEmitter emitter, AtomicBoolean closed, String event, String data) {
         if (closed.get()) return;

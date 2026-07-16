@@ -13,4 +13,6 @@ public class ScoredChunk {
     private String fileName;
     private String content;
     private double score;
+    /** 来源标记：""=A路向量, "B"=B路补刀, "keyword"=关键词, "graph"=图谱扩展 */
+    private String source;
 }

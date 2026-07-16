@@ -8,8 +8,7 @@ import java.util.*;
  * RRF（Reciprocal Rank Fusion）融合向量召回与关键词召回两路结果。
  *
  * 公式：score(d) = sum_i 1 / (k + rank_i(d))，k 为平滑常数（通常 60）。
- * 关键性质（面试必讲）：只看“排名”不看“分数”——向量相似度（0~1）和 BM25/全文得分
- * 量纲完全不同，没法直接加权；RRF 按排名倒数融合，天然规避量纲对齐问题。
+ * 关键性质：只看"排名"不看"分数"，天然规避量纲对齐问题。
  */
 public final class RrfFusion {
 
@@ -26,7 +25,8 @@ public final class RrfFusion {
                 .sorted(Map.Entry.<Long, Double>comparingByValue().reversed())
                 .map(e -> {
                     ScoredChunk c = byId.get(e.getKey());
-                    return new ScoredChunk(c.getChunkId(), c.getDocId(), c.getSeq(), c.getFileName(), c.getContent(), e.getValue());
+                    return new ScoredChunk(c.getChunkId(), c.getDocId(), c.getSeq(),
+                            c.getFileName(), c.getContent(), e.getValue(), c.getSource());
                 })
                 .toList();
     }
