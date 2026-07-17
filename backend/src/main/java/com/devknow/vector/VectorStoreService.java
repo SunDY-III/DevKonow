@@ -56,10 +56,6 @@ public class VectorStoreService {
         }
     }
 
-    public void saveWithKey(String keyPrefix, VectorRecord record) {
-        save(record);
-    }
-
     // ==================== 检索 ====================
 
     public List<ScoredChunk> search(float[] queryVector, int topK) {
@@ -68,14 +64,6 @@ public class VectorStoreService {
 
     public List<ScoredChunk> searchByPrefix(String keyPrefix, float[] queryVector, int topK) {
         Filter filter = buildFilterFromPrefix(keyPrefix);
-        return searchWithFilter(queryVector, topK, filter);
-    }
-
-    public List<ScoredChunk> searchByProject(Long projectId, String source, float[] queryVector, int topK) {
-        Filter filter = Filter.newBuilder()
-                .addMust(match("project_id", projectId))
-                .addMust(matchKeyword("source", source))
-                .build();
         return searchWithFilter(queryVector, topK, filter);
     }
 

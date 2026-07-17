@@ -39,13 +39,4 @@ public class ProjectStructure {
 
     /** 各语言文件数统计，如 {java: 180, xml: 30, yml: 12} */
     private java.util.Map<String, Integer> languageCounts;
-
-    /** 从 README 提取的项目描述 */
-    private String description;
-
-    /** 简要摘要文本 */
-    public String getSummary() {
-        return String.format("%d 个文件 | 主语言: %s | 构建工具: %s",
-                totalFiles, mainLanguage, buildTool != null ? buildTool : "未知");
-    }
 }

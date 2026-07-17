@@ -221,13 +221,6 @@ public class GitRepoManager {
         }
     }
 
-    /**
-     * 兼容旧调用方：只传 token（等同于 isSshKey=false）。
-     */
-    public Path clone(String repoUrl, Path localPath, String token) throws GitException {
-        return clone(repoUrl, localPath, token, false);
-    }
-
     // ======================== 重新索引 ========================
 
     /**
@@ -311,13 +304,6 @@ public class GitRepoManager {
             throw new GitException(GitException.ErrorCode.CLONE_FAILED,
                     "仓库验证失败: " + e.getMessage());
         }
-    }
-
-    /**
-     * 兼容旧调用方：只传 token。
-     */
-    public String verifyRepo(String repoUrl, String token) throws GitException {
-        return verifyRepo(repoUrl, token, false);
     }
 
     /** 脱敏日志中的 repoUrl（去掉 token 参数） */

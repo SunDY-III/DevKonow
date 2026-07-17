@@ -28,7 +28,6 @@ public class ScipSymbol {
         this.memberName = memberName;
     }
 
-    public String getRaw() { return raw; }
     public String getPackageName() { return packageName; }
     public String getClassName() { return className; }
     public String getMemberName() { return memberName; }

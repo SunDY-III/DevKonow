@@ -53,22 +53,6 @@ public class KnowledgeGraphService {
     }
 
     /**
-     * 批量创建/更新文档节点。
-     */
-    public void batchCreateNodes(List<DocumentNode> nodes) {
-        executeInTransaction(tx -> {
-            for (DocumentNode node : nodes) {
-                tx.execute("MERGE (d:Document {docId: $docId}) " +
-                                "SET d.title = $title, d.level = $level, " +
-                                "d.tags = $tags, d.updatedAt = timestamp()",
-                        Map.of("docId", node.docId, "title", node.title,
-                                "level", node.level, "tags", node.tags != null ? node.tags : ""));
-            }
-            return null;
-        });
-    }
-
-    /**
      * 删除文档节点及其所有关系。
      */
     public void deleteNode(Long docId) {
@@ -90,21 +74,6 @@ public class KnowledgeGraphService {
                             "MERGE (a)-[r:" + type.name() + "]->(b) " +
                             "SET r.createdAt = timestamp()",
                     Map.of("sourceId", sourceDocId, "targetId", targetDocId));
-            return null;
-        });
-    }
-
-    /**
-     * 批量创建关系。
-     */
-    public void batchCreateRelations(List<DocRelation> relations) {
-        executeInTransaction(tx -> {
-            for (DocRelation r : relations) {
-                tx.execute("MATCH (a:Document {docId: $sourceId}), (b:Document {docId: $targetId}) " +
-                                "MERGE (a)-[r:" + r.type.name() + "]->(b) " +
-                                "SET r.createdAt = timestamp()",
-                        Map.of("sourceId", r.sourceDocId, "targetId", r.targetDocId));
-            }
             return null;
         });
     }

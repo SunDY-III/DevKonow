@@ -73,19 +73,6 @@ public class RagService {
         return results;
     }
 
-    public String buildCodeContext(List<ScoredChunk> chunks) {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < chunks.size(); i++) {
-            ScoredChunk c = chunks.get(i);
-            sb.append("[片段").append(i + 1)
-              .append(" 文件:").append(c.getFileName() != null ? c.getFileName() : "未知")
-              .append(" 行:").append(c.getSeq())
-              .append("]\n")
-              .append(c.getContent()).append("\n\n");
-        }
-        return sb.toString();
-    }
-
     public String buildContext(List<ScoredChunk> chunks) {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < chunks.size(); i++) {
@@ -253,22 +240,5 @@ public class RagService {
             log.warn("获取用户角色失败（userId={}）: {}", userId, e.getMessage());
         }
         return UserKnowledgeRole.UNSPECIFIED;
-    }
-
-    private int[] expandRange(int center, int offset) {
-        int low = Math.max(1, center - offset);
-        int high = Math.min(5, center + offset);
-        int[] range = new int[high - low + 1];
-        for (int i = 0; i < range.length; i++) range[i] = low + i;
-        return range;
-    }
-
-    public List<ScoredChunk> testGraphExpand(int topK, int maxExtra, int hops) {
-        List<DocumentChunk> docChunks = chunkRepository.findAll();
-        if (docChunks.isEmpty()) return List.of();
-        List<ScoredChunk> hits = docChunks.stream().limit(topK)
-                .map(c -> new ScoredChunk(c.getId(), c.getDocId(), c.getSeq(), "", c.getContent(), 1.0, ""))
-                .toList();
-        return graphExpander.expand(new ArrayList<>(hits), maxExtra, hops);
     }
 }

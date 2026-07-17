@@ -36,11 +36,7 @@ public class ChatService {
     @Value("${app.rag.confidence-threshold}")
     private double confidenceThreshold;
 
-    private Long projectId = 0L;
-
-    public void setProjectId(Long projectId) {
-        this.projectId = projectId != null ? projectId : 0L;
-    }
+    private static final Long FALLBACK_PROJECT_ID = 0L;
 
     @Async
     public void streamChat(Long userId, String conversationId, String question, SseEmitter emitter) {
@@ -174,7 +170,7 @@ public class ChatService {
 
     private void handleAgentRoute(Long userId, String conversationId, String question,
                                    SseEmitter emitter, AtomicBoolean closed) {
-        String agentReply = codeReviewAgentService.analyze(userId, projectId, conversationId, question);
+        String agentReply = codeReviewAgentService.analyze(userId, FALLBACK_PROJECT_ID, conversationId, question);
         send(emitter, closed, "agent", agentReply);
         send(emitter, closed, "token", agentReply);
         send(emitter, closed, "done", "");

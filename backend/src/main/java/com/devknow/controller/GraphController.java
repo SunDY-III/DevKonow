@@ -2,8 +2,6 @@ package com.devknow.knowledge.graph;
 
 import com.devknow.knowledge.KnowledgeDocument;
 import com.devknow.knowledge.KnowledgeDocumentRepository;
-import com.devknow.rag.RagService;
-import com.devknow.vector.ScoredChunk;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -23,7 +21,6 @@ public class GraphController {
 
     private final KnowledgeGraphService graphService;
     private final KnowledgeDocumentRepository documentRepository;
-    private final RagService ragService;
 
     /**
      * 手动添加文档关系。
@@ -128,21 +125,10 @@ public class GraphController {
     @GetMapping("/stats")
     public ResponseEntity<?> stats() {
         try {
-            return ResponseEntity.ok(graphService.getStats());
+            Map<String, Object> stats = graphService.getStats();
+        return ResponseEntity.ok(stats);
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
-    }
-
-    /**
-     * 测试图谱 RAG 扩展（调试用）。
-     */
-    @PostMapping("/test-expand")
-    public ResponseEntity<?> testExpand(@RequestParam(defaultValue = "3") int topK,
-                                        @RequestParam(defaultValue = "2") int maxExtra,
-                                        @RequestParam(defaultValue = "2") int hops) {
-        List<ScoredChunk> dummy = List.of();
-        List<ScoredChunk> expanded = ragService.testGraphExpand(topK, maxExtra, hops);
-        return ResponseEntity.ok(Map.of("expanded", expanded));
     }
 }

@@ -21,7 +21,6 @@ public class ImpactReport {
     private List<String> changedFiles;
     private List<String> changedMethods;
     private Map<String, List<String>> affectedCallers;
-    private List<Map<String, Object>> graphRelations;
     private String llmReport;
 
     public static ImpactReport failed(String error) {

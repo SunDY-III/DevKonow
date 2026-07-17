@@ -8,7 +8,6 @@ import org.springframework.stereotype.Component;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * SCIP 索引解析器。

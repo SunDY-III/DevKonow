@@ -304,7 +304,7 @@ public class CodeIndexService {
                 .vector(vector)
                 .build();
 
-        vectorStoreService.saveWithKey("vec:" + projectId + ":code:", record);
+        vectorStoreService.save(record);
     }
 
     /**

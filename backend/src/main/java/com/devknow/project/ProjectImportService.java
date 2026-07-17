@@ -256,20 +256,6 @@ public class ProjectImportService {
 
     // ======================== 辅助方法 ========================
 
-    public void cleanupStaleIndexes() {
-        try (var cursor = redis.scan(
-                org.springframework.data.redis.core.ScanOptions.scanOptions()
-                        .match("index:status:*").count(500).build())) {
-            while (cursor.hasNext()) {
-                String key = cursor.next();
-                if ("INDEXING".equals(redis.opsForValue().get(key))) {
-                    log.warn("检测到残留索引标记: {}", key);
-                    redis.delete(key);
-                }
-            }
-        }
-    }
-
     private CodeProject findExistingProject(String repoUrl) {
         List<CodeProject> active = projectRepository.findByStatus("ACTIVE");
         for (CodeProject p : active) {
