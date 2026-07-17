@@ -127,7 +127,7 @@ public class VectorStoreService {
                 var vec = p.getVectors().getVector().getDataList();
                 float[] arr = new float[vec.size()];
                 for (int i = 0; i < vec.size(); i++) arr[i] = vec.get(i);
-                result.put(cid + ":" + cid, arr);
+                result.put(String.valueOf(cid), arr);
             }
             return result;
         } catch (Exception e) {

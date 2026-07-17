@@ -10,6 +10,8 @@ import com.devknow.governance.TokenAuditService;
 import com.devknow.knowledge.DocumentChunk;
 import com.devknow.knowledge.DocumentChunkRepository;
 import com.devknow.knowledge.graph.GraphExpander;
+import com.devknow.knowledge.graph.GraphRelationResult;
+import com.devknow.knowledge.graph.KnowledgeGraphService;
 import com.devknow.vector.ScoredChunk;
 import com.devknow.vector.VectorStoreService;
 import dev.langchain4j.model.embedding.EmbeddingModel;
@@ -34,6 +36,7 @@ public class RagService {
     private final QueryExpander queryExpander;
     private final TokenAuditService tokenAuditService;
     private final GraphExpander graphExpander;
+    private final KnowledgeGraphService knowledgeGraphService;
     private final LevelClassifier levelClassifier;
     private final RoleLevelMapper roleLevelMapper;
     private final UserRepository userRepository;
@@ -45,6 +48,64 @@ public class RagService {
 
     private static final double MMR_LAMBDA = 0.7;
     private static final int MMR_CANDIDATE_POOL = 12;
+
+    /**
+     * 根据层级和置信度计算自适应 MMR λ。
+     *
+     * <p>λ 越大越偏相关性，越小越偏多样性：
+     * <ul>
+     *   <li>L1（战略/架构）→ 0.35，高多样性覆盖全局</li>
+     *   <li>L2（系统设计）→ 0.50，平衡偏多样</li>
+     *   <li>L3（模块逻辑）→ 0.60，平衡偏相关</li>
+     *   <li>L4（实现细节）→ 0.75，相关优先</li>
+     *   <li>L5（具体代码行）→ 0.85，强相关精准定位</li>
+     * </ul>
+     * 置信度二次调节：低置信度（<0.5）降 λ 扩多样性，高置信度（>0.8）升 λ 聚焦相关。
+     */
+    private double computeAdaptiveLambda(int targetLevel, double confidence) {
+        double baseLambda;
+        switch (targetLevel) {
+            case 1:  baseLambda = 0.35; break;
+            case 2:  baseLambda = 0.50; break;
+            case 3:  baseLambda = 0.60; break;
+            case 4:  baseLambda = 0.75; break;
+            case 5:  baseLambda = 0.85; break;
+            default: baseLambda = 0.60;
+        }
+        // 置信度调节
+        if (confidence < 0.5) {
+            baseLambda -= 0.10; // 低置信 → 扩多样性，多捞候选给 LLM 判断
+        } else if (confidence > 0.8) {
+            baseLambda += 0.10; // 高置信 → 聚焦相关，减少噪声
+        }
+        return Math.max(0.3, Math.min(0.95, baseLambda));
+    }
+
+    /**
+     * 构建图谱文档关联关系。
+     * 返回 Map<docId, Set<relatedDocId>>，用于图感知 MMR 的 α 衰减。
+     */
+    private Map<Long, Set<Long>> buildGraphRelationMap(List<ScoredChunk> candidates, int maxHops) {
+        Map<Long, Set<Long>> relationMap = new HashMap<>();
+        Set<Long> seen = new HashSet<>();
+        for (ScoredChunk c : candidates) {
+            Long docId = c.getDocId();
+            if (docId == null || !seen.add(docId)) continue;
+            try {
+                List<GraphRelationResult> related = knowledgeGraphService.findRelated(docId, maxHops);
+                if (!related.isEmpty()) {
+                    Set<Long> relatedIds = new HashSet<>();
+                    for (GraphRelationResult r : related) {
+                        relatedIds.add(r.getDocId());
+                    }
+                    relationMap.put(docId, relatedIds);
+                }
+            } catch (Exception e) {
+                log.debug("图谱关联查询失败 docId={}: {}", docId, e.getMessage());
+            }
+        }
+        return relationMap;
+    }
 
     public float[] embed(Long userId, String text) {
         float[] v = embeddingModel.embed(text).content().vector();
@@ -143,30 +204,38 @@ public class RagService {
         // 步骤 6: RRF 融合
         List<ScoredChunk> fused = RrfFusion.fuse(vectorHits, keywordHits, rrfK);
 
-        // 步骤 7: MMR 多样性去重
-        List<ScoredChunk> candidates = fused.size() > MMR_CANDIDATE_POOL
-                ? fused.subList(0, MMR_CANDIDATE_POOL)
+        // 步骤 7: 图感知 MMR 多样性去重
+        //   — 候选池动态计算（rerankTopN × 4，至少 20）
+        //   — λ 根据问题层级 + 置信度自适应调节
+        //   — pairSim 考虑知识图谱中文档关联关系，保留互补信息
+        int candidatePoolSize = Math.max(rerankTopN * 4, 20);
+        List<ScoredChunk> candidates = fused.size() > candidatePoolSize
+                ? fused.subList(0, candidatePoolSize)
                 : fused;
 
         Map<String, float[]> vectorMap = vectorStoreService.retrieveVectors(
                 candidates.stream().map(ScoredChunk::getChunkId).collect(Collectors.toList()));
 
+        double adaptiveLambda = computeAdaptiveLambda(targetLevel, confidence);
+        Map<Long, Set<Long>> graphRelationMap = buildGraphRelationMap(candidates, 2);
+
         List<ScoredChunk> diverse = mmrSelector.select(
                 queryVector, candidates,
-                (docId, chunkId) -> vectorMap.get(chunkId + ":" + chunkId),
-                MMR_LAMBDA, rerankTopN);
+                (docId, chunkId) -> vectorMap.get(String.valueOf(chunkId)),
+                adaptiveLambda, rerankTopN, graphRelationMap);
 
-        // 步骤 8: 重排序 + 图谱扩展
-        List<ScoredChunk> topN = reranker.rerank(question, diverse, rerankTopN);
+        // 步骤 8: 代码结构感知重排序 + 图谱扩展
+        List<ScoredChunk> topN = reranker.rerank(question, diverse, rerankTopN, projectId);
         List<ScoredChunk> expanded = graphExpander.expand(topN, 3, 2);
 
         // 置信度计算：多因子加权
         confidence = calculateConfidence(vectorHits, keywordHits, fused, confidence);
 
-        log.info("levelAwareRetrieve: q={}, role={}, level={}, conf={}, A_hits={}, B={}, MMR={}/{}, expanded={}",
+        log.info("levelAwareRetrieve: q={}, role={}, level={}, conf={}, A_hits={}, B={}, MMR(lambda={})={}/{}, pool={}, graphRelated={}, expanded={}",
                 question, userRole, targetLevel, String.format("%.2f", confidence),
-                vectorHits.size(), needRouteB, diverse.size(), candidates.size(),
-                expanded.size() - topN.size());
+                vectorHits.size(), needRouteB, String.format("%.2f", adaptiveLambda),
+                diverse.size(), candidates.size(), candidatePoolSize,
+                graphRelationMap.size(), expanded.size() - topN.size());
 
         return new RagResult(expanded, confidence);
     }

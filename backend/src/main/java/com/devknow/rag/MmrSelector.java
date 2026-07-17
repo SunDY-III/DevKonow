@@ -5,74 +5,88 @@ import com.devknow.vector.VectorStoreService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 import java.util.function.BiFunction;
 
 /**
  * MMR（Maximal Marginal Relevance，最大边际相关）多样性重排。
  *
- * <p><b>解决什么问题（面试点）：</b>混合检索 + RRF 融合后的 TopK 里，经常混进大量
+ * <p><b>解决什么问题：</b>混合检索 + RRF 融合后的 TopK 里，经常混进大量
  * 语义近似/内容重复的片段（同一段话被切到相邻 chunk、多文档抄录同一条款……）。
- * 这些冗余片段挤占有限的 Prompt 上下文窗口、抬高 Token 成本，还会稀释信息覆盖度——
- * “越相关的 N 条”不等于“信息量最大的 N 条”。</p>
+ * 这些冗余片段挤占有限的 Prompt 上下文窗口、抬高 Token 成本，还会稀释信息覆盖度。</p>
  *
- * <p><b>MMR 思想：</b>每一步都在「与查询相关」和「与已选片段不冗余」之间做权衡，
- * 迭代地把“相关性高 <i>且</i> 与已选集合最不相似”的片段挑进来：</p>
+ * <p><b>标准 MMR 公式：</b>
  * <pre>
  *   next = argmax_{d in C\S} [ λ·sim(d, q) - (1-λ)·max_{s in S} sim(d, s) ]
  * </pre>
- * 其中 C 是候选池、S 是已选集合、q 是查询；λ∈[0,1] 控制相关性/多样性权衡
- * （λ→1 退化为纯相关性排序，λ→0 变为纯多样性）。
  *
- * <p><b>相似度口径：</b>统一用 embedding 余弦。relevance 项用「查询-片段」余弦，
- * diversity 项用「片段-片段」余弦；片段向量从向量库按 docId+chunkId 回查。
- * 关键词通道命中、向量缺失的片段：relevance 退化为候选名次归一值，
- * diversity 视为 0（不因“查不到向量”而被误判为冗余）。</p>
+ * <p><b>图感知扩展（Graph-aware MMR）：</b>
+ * <pre>
+ *   sim'(d, s) = sim(d, s) × α(hops(doc_d, doc_s))
+ *   α(h) = 1 - 0.3 × exp(-h)
+ * </pre>
+ * 当两个片段所属的文档在知识图谱中有引用关系（h ≤ 2）时，α < 1，
+ * 降低多样性惩罚，保留互补信息。无关文档退化为标准 MMR。
  *
- * <p>纯计算、无外部副作用，便于单测；接口形状与 {@link Reranker} 对齐，可灵活编排。</p>
+ * <p>纯计算、无外部副作用，便于单测。</p>
  */
 @Slf4j
 @Component
 public class MmrSelector {
 
     /**
-     * 在候选池上做 MMR 多样性选择。
-     *
-     * @param queryVector    查询向量（relevance 项基准，可为 null）
-     * @param candidates     RRF + 规则重排后的候选池，已按相关性降序
-     * @param vectorResolver 给定 (docId, chunkId) 返回该片段 embedding，缺失返回 null
-     * @param lambda         相关性/多样性权衡 λ∈[0,1]
-     * @param topN           最终选出的片段数
-     * @return 多样性重排后的 TopN（保持挑选顺序）
+     * 标准 MMR 选择（无图谱感知）。
      */
     public List<ScoredChunk> select(float[] queryVector,
                                     List<ScoredChunk> candidates,
                                     BiFunction<Long, Long, float[]> vectorResolver,
                                     double lambda,
                                     int topN) {
+        return select(queryVector, candidates, vectorResolver, lambda, topN, null);
+    }
+
+    /**
+     * 图感知 MMR 选择。
+     *
+     * @param queryVector       查询向量（relevance 项基准，可为 null）
+     * @param candidates        RRF + 规则重排后的候选池，已按相关性降序
+     * @param vectorResolver    给定 (docId, chunkId) 返回该片段 embedding，缺失返回 null
+     * @param lambda            相关性/多样性权衡 λ∈[0,1]
+     * @param topN              最终选出的片段数
+     * @param graphRelatedDocIds 图谱中文档关联关系：docId → 关联文档的 docId 集合
+     *                           null 或不提供则退化为标准 MMR
+     * @return 多样性重排后的 TopN
+     */
+    public List<ScoredChunk> select(float[] queryVector,
+                                    List<ScoredChunk> candidates,
+                                    BiFunction<Long, Long, float[]> vectorResolver,
+                                    double lambda,
+                                    int topN,
+                                    Map<Long, Set<Long>> graphRelatedDocIds) {
         if (candidates == null || candidates.isEmpty()) return List.of();
         if (topN <= 0) return List.of();
-        if (candidates.size() <= topN) return candidates;   // 候选不足，无需筛，直接返回
+        if (candidates.size() <= topN) return candidates;
 
         int n = candidates.size();
-        float[][] vecs = new float[n][];      // 预取候选向量，避免选择循环里重复 IO
+        float[][] vecs = new float[n][];
         double[] relevance = new double[n];
+        Long[] docIds = new Long[n];
         int missing = 0;
         for (int i = 0; i < n; i++) {
             ScoredChunk c = candidates.get(i);
             float[] v = vectorResolver == null ? null : vectorResolver.apply(c.getDocId(), c.getChunkId());
             vecs[i] = v;
+            docIds[i] = c.getDocId();
             relevance[i] = (v != null && queryVector != null)
-                    ? VectorStoreService.cosine(queryVector, v)   // 有向量：查询余弦
-                    : rankFallback(i, n);                          // 无向量：名次归一兜底
+                    ? VectorStoreService.cosine(queryVector, v)
+                    : rankFallback(i, n);
             if (v == null) missing++;
         }
 
         boolean[] picked = new boolean[n];
         List<Integer> selected = new ArrayList<>(topN);
 
-        // 第 1 个：纯相关性最高（已选集合为空，diversity 项不参与）
+        // 第 1 个：纯相关性最高
         int first = argMaxRelevance(relevance, picked);
         picked[first] = true;
         selected.add(first);
@@ -85,7 +99,7 @@ public class MmrSelector {
                 if (picked[i]) continue;
                 double maxSimToSelected = 0.0;
                 for (int s : selected) {
-                    double sim = pairSim(vecs[i], vecs[s]);
+                    double sim = pairSim(vecs[i], vecs[s], docIds[i], docIds[s], graphRelatedDocIds);
                     if (sim > maxSimToSelected) maxSimToSelected = sim;
                 }
                 double mmr = lambda * relevance[i] - (1.0 - lambda) * maxSimToSelected;
@@ -101,15 +115,72 @@ public class MmrSelector {
 
         List<ScoredChunk> result = new ArrayList<>(selected.size());
         for (int idx : selected) result.add(candidates.get(idx));
-        log.info("mmr select: candidates={}, picked={}, lambda={}, missingVector={}",
-                n, result.size(), lambda, missing);
+        if (graphRelatedDocIds != null && !graphRelatedDocIds.isEmpty()) {
+            log.info("mmr select(graph-aware): candidates={}, picked={}, lambda={}, missingVector={}",
+                    n, result.size(), lambda, missing);
+        } else {
+            log.info("mmr select: candidates={}, picked={}, lambda={}, missingVector={}",
+                    n, result.size(), lambda, missing);
+        }
         return result;
     }
 
-    /** 片段-片段相似度；任一向量缺失则视为 0（不施加冗余惩罚） */
-    private double pairSim(float[] a, float[] b) {
+    /**
+     * 图感知的片段间相似度。
+     * <p>
+     * 标准余弦相似度 × 图距离衰减因子 α(h)：
+     * <pre>
+     *   α(h) = 1 - 0.3 × exp(-h)
+     *   同文档 (h=0): α=0.70 → 加强冗余惩罚
+     *   图关联 (h≤2): α≈0.85~0.96 → 降低惩罚，保留互补
+     *   无关文档:     α=1.0  → 退化为标准 MMR
+     * </pre>
+     */
+    private double pairSim(float[] a, float[] b, Long docIdA, Long docIdB,
+                           Map<Long, Set<Long>> graphRelatedDocIds) {
         if (a == null || b == null) return 0.0;
-        return VectorStoreService.cosine(a, b);
+        double cos = VectorStoreService.cosine(a, b);
+
+        // 无图谱数据 → 退化为标准 MMR
+        if (graphRelatedDocIds == null || graphRelatedDocIds.isEmpty()
+                || docIdA == null || docIdB == null) {
+            return cos;
+        }
+
+        double alpha = computeGraphAlpha(docIdA, docIdB, graphRelatedDocIds);
+        return cos * alpha;
+    }
+
+    /**
+     * 计算图距离衰减因子 α。
+     *
+     * <p>α(h) = 1 - 0.3 × exp(-h)
+     * <ul>
+     *   <li>同一文档 (h=0): α = 0.70</li>
+     *   <li>直接关联 (h=1): α = 1 - 0.3/e ≈ 0.89</li>
+     *   <li>2 跳关联 (h=2): α = 1 - 0.3/e² ≈ 0.96</li>
+     *   <li>无关 (h=∞):    α = 1.0</li>
+     * </ul>
+     */
+    private double computeGraphAlpha(Long docIdA, Long docIdB,
+                                      Map<Long, Set<Long>> graphRelatedDocIds) {
+        if (docIdA.equals(docIdB)) {
+            // 同一文档 → 大概率内容冗余，增强惩罚
+            return 0.70;
+        }
+
+        // 检查是否图关联（直接或通过反向查找）
+        Set<Long> related = graphRelatedDocIds.get(docIdA);
+        if (related != null && related.contains(docIdB)) {
+            return 0.89; // α(1) = 1 - 0.3/e
+        }
+        // 反向检查（图是双向的，但 Map 只存了单向查找）
+        related = graphRelatedDocIds.get(docIdB);
+        if (related != null && related.contains(docIdA)) {
+            return 0.89;
+        }
+
+        return 1.0; // 无图关系 → 标准 MMR
     }
 
     private int argMaxRelevance(double[] relevance, boolean[] picked) {
@@ -125,8 +196,8 @@ public class MmrSelector {
         return best;
     }
 
-    /** 无向量时的 relevance 兜底：候选名次越靠前分越高，线性归一到 (0,1] */
     private double rankFallback(int rank, int total) {
         return (double) (total - rank) / total;
     }
+
 }
