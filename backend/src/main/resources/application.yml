@@ -99,6 +99,9 @@ app:
     window-seconds: 60
   agent:
     max-tool-rounds: 6        # Agent 最大推理轮次，防死循环烧 Token
+  project:
+    max-repo-mb: 2000         # 最大仓库大小（MB），超过阻止导入
+    max-repo-files: 50000     # 最大文件数，超过阻止导入
   codeindex:
     mode: tree-sitter         # tree-sitter（轻量级）| scip（性能级，需 index.scip）
     scip:
