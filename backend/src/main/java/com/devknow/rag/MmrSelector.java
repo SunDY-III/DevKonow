@@ -25,8 +25,12 @@ import java.util.function.BiFunction;
  *   sim'(d, s) = sim(d, s) × α(hops(doc_d, doc_s))
  *   α(h) = 1 - 0.3 × exp(-h)
  * </pre>
- * 当两个片段所属的文档在知识图谱中有引用关系（h ≤ 2）时，α < 1，
+ * 当两个片段所属的文档在知识图谱中有引用关系时，α < 1，
  * 降低多样性惩罚，保留互补信息。无关文档退化为标准 MMR。
+ * 跳数越低 α 越小（冗余惩罚越强），跳数越高越趋近 1.0。
+ *
+ * <p>graphRelatedDocIds 存储为 {@code Map<Long, Map<Long, Integer>>}：
+ * {@code {docId → {relatedDocId → hops}}}，其中 hops 为图谱路径长度。
  *
  * <p>纯计算、无外部副作用，便于单测。</p>
  */
@@ -53,7 +57,7 @@ public class MmrSelector {
      * @param vectorResolver    给定 (docId, chunkId) 返回该片段 embedding，缺失返回 null
      * @param lambda            相关性/多样性权衡 λ∈[0,1]
      * @param topN              最终选出的片段数
-     * @param graphRelatedDocIds 图谱中文档关联关系：docId → 关联文档的 docId 集合
+     * @param graphRelatedDocIds 图谱中文档关联关系：docId → {关联文档 docId → 跳数 hops}
      *                           null 或不提供则退化为标准 MMR
      * @return 多样性重排后的 TopN
      */
@@ -62,7 +66,7 @@ public class MmrSelector {
                                     BiFunction<Long, Long, float[]> vectorResolver,
                                     double lambda,
                                     int topN,
-                                    Map<Long, Set<Long>> graphRelatedDocIds) {
+                                    Map<Long, Map<Long, Integer>> graphRelatedDocIds) {
         if (candidates == null || candidates.isEmpty()) return List.of();
         if (topN <= 0) return List.of();
         if (candidates.size() <= topN) return candidates;
@@ -137,7 +141,7 @@ public class MmrSelector {
      * </pre>
      */
     private double pairSim(float[] a, float[] b, Long docIdA, Long docIdB,
-                           Map<Long, Set<Long>> graphRelatedDocIds) {
+                           Map<Long, Map<Long, Integer>> graphRelatedDocIds) {
         if (a == null || b == null) return 0.0;
         double cos = VectorStoreService.cosine(a, b);
 
@@ -162,22 +166,39 @@ public class MmrSelector {
      *   <li>无关 (h=∞):    α = 1.0</li>
      * </ul>
      */
+    /**
+     * 图距离衰减因子 α，实现指数衰减公式。
+     *
+     * <p>α(h) = 1 - 0.3 × exp(-h)
+     * <ul>
+     *   <li>同一文档 (h=0): α = 0.70</li>
+     *   <li>直接关联 (h=1): α = 1 - 0.3/e ≈ 0.89</li>
+     *   <li>2 跳关联 (h=2): α = 1 - 0.3/e² ≈ 0.96</li>
+     *   <li>无关 (h=∞):    α = 1.0</li>
+     * </ul>
+     */
     private double computeGraphAlpha(Long docIdA, Long docIdB,
-                                      Map<Long, Set<Long>> graphRelatedDocIds) {
+                                      Map<Long, Map<Long, Integer>> graphRelatedDocIds) {
         if (docIdA.equals(docIdB)) {
-            // 同一文档 → 大概率内容冗余，增强惩罚
-            return 0.70;
+            return 0.70; // α(0) = 1 - 0.3 * e^0
         }
 
-        // 检查是否图关联（直接或通过反向查找）
-        Set<Long> related = graphRelatedDocIds.get(docIdA);
-        if (related != null && related.contains(docIdB)) {
-            return 0.89; // α(1) = 1 - 0.3/e
+        // 从 docIdA → relatedDocId 映射中查 hops
+        Map<Long, Integer> relatedA = graphRelatedDocIds.get(docIdA);
+        if (relatedA != null) {
+            Integer hops = relatedA.get(docIdB);
+            if (hops != null) {
+                return 1.0 - 0.3 * Math.exp(-hops);
+            }
         }
-        // 反向检查（图是双向的，但 Map 只存了单向查找）
-        related = graphRelatedDocIds.get(docIdB);
-        if (related != null && related.contains(docIdA)) {
-            return 0.89;
+
+        // 反向查找（图是无向的，但 Map 只存了单向查找）
+        Map<Long, Integer> relatedB = graphRelatedDocIds.get(docIdB);
+        if (relatedB != null) {
+            Integer hops = relatedB.get(docIdA);
+            if (hops != null) {
+                return 1.0 - 0.3 * Math.exp(-hops);
+            }
         }
 
         return 1.0; // 无图关系 → 标准 MMR

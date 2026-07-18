@@ -7,6 +7,7 @@ import com.devknow.vector.VectorStoreService;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -44,9 +45,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class CodeIndexService {
 
     private final CodeParser codeParser;
-    private final EmbeddingModel embeddingModel;
     private final VectorStoreService vectorStoreService;
     private final CodeUnitEntityRepository codeUnitRepo;
+    private final CodeMethodCallRepository methodCallRepo;
+    @Qualifier("codeEmbeddingModel")
+    private final EmbeddingModel embeddingModel;
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -105,7 +108,11 @@ public class CodeIndexService {
                         fileCount++;
                     } else {
                         String source = Files.readString(file, StandardCharsets.UTF_8);
-                        if (source.isBlank() || source.length() > 500_000) continue;
+                        if (source.isBlank()) continue;
+                        if (source.length() > 500_000) {
+                            log.warn("文件过大静默跳过: {} ({} 字符 > 500KB)", filePath, source.length());
+                            continue;
+                        }
                         String ext = getExtension(filePath);
                         List<CodeUnit> units = codeParser.parse(filePath, source, ext);
                         if (units.isEmpty()) continue;
@@ -224,7 +231,11 @@ public class CodeIndexService {
 
                 // 重新索引
                 String source = Files.readString(fullPath, StandardCharsets.UTF_8);
-                if (source.isBlank() || source.length() > 500_000) continue;
+                if (source.isBlank()) continue;
+                if (source.length() > 500_000) {
+                    log.warn("波及重索引跳过超大文件: {} ({} 字符 > 500KB)", filePath, source.length());
+                    continue;
+                }
 
                 String ext = getExtension(filePath);
                 List<CodeUnit> units = codeParser.parse(filePath, source, ext);
@@ -262,6 +273,9 @@ public class CodeIndexService {
 
         // ③ Redis ripple 反向索引（波及重建用）
         buildRippleCache(projectId, unit);
+
+        // ④ MySQL code_method_call 关联表（高效反向调用链查询，替代 LIKE）
+        buildMethodCallTable(projectId, unit);
     }
 
     /**
@@ -343,14 +357,47 @@ public class CodeIndexService {
         return dot >= 0 ? name.substring(dot + 1) : name;
     }
 
+    /**
+     * 构建 code_method_call 关联表记录。
+     * 将 CodeUnit 的 calls/enrichedCalls 解析为逐条记录写入，
+     * 供 {@link com.devknow.codeindex.CodeMethodCallRepository#findCallersByMethodName} 走索引查询。
+     */
+    private void buildMethodCallTable(Long projectId, CodeUnit unit) {
+        List<String> callList = unit.getEnrichedCalls() != null && !unit.getEnrichedCalls().isEmpty()
+                ? unit.getEnrichedCalls()
+                : unit.getCalls();
+        if (callList == null || callList.isEmpty()) return;
+
+        for (String call : callList) {
+            String methodName = extractSimpleMethodName(call);
+            if (methodName == null || methodName.isBlank()) continue;
+            try {
+                methodCallRepo.save(CodeMethodCall.builder()
+                        .projectId(projectId)
+                        .callerFile(unit.getFilePath())
+                        .methodName(methodName)
+                        .build());
+            } catch (org.springframework.dao.DataIntegrityViolationException e) {
+                // 唯一键冲突 → 已存在，跳过（并发写入场景）
+                log.trace("方法调用记录已存在: projectId={}, method={}, file={}",
+                        projectId, methodName, unit.getFilePath());
+            } catch (Exception e) {
+                log.warn("方法调用记录写入失败: projectId={}, method={}, file={}: {}",
+                        projectId, methodName, unit.getFilePath(), e.getMessage());
+            }
+        }
+    }
+
     // ======================== 数据清理 ========================
 
     /**
      * 清空项目的全部旧索引数据。
      */
     private void clearProjectData(Long projectId) {
-        // MySQL
+        // MySQL code_unit 表
         codeUnitRepo.deleteByProjectId(projectId);
+        // MySQL code_method_call 关联表
+        methodCallRepo.deleteByProjectId(projectId);
         // Redis 向量（vec:projectId:code:*）
         scanAndDelete("vec:" + projectId + ":code:*");
         // Redis ripple 缓存（ripple:callers:projectId:*）
@@ -433,6 +480,14 @@ public class CodeIndexService {
             sb.append("calls: ").append(String.join(", ", unit.getEnrichedCalls())).append('\n');
         } else if (unit.getCalls() != null && !unit.getCalls().isEmpty()) {
             sb.append("calls: ").append(String.join(", ", unit.getCalls())).append('\n');
+        }
+        // 加入方法 body（前 200 字符）提升无注释/无调用方法的语义分辨率
+        if (unit.getBody() != null && !unit.getBody().isBlank()) {
+            String bodySnippet = unit.getBody();
+            if (bodySnippet.length() > 200) {
+                bodySnippet = bodySnippet.substring(0, 200);
+            }
+            sb.append(bodySnippet).append('\n');
         }
         return sb.toString();
     }

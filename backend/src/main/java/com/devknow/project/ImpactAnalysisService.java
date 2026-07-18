@@ -36,6 +36,7 @@ public class ImpactAnalysisService {
 
     private static final int MAX_CHANGED_FILES = 30;
     private static final int MAX_CALLERS_PER_METHOD = 5;
+    private static final int MAX_DIFF_LINES = 100;
 
     public ImpactReport analyzeCommit(Long projectId, String commitHash, Consumer<String> onProgress) {
         if (onProgress == null) onProgress = msg -> {};
@@ -67,7 +68,7 @@ public class ImpactAnalysisService {
                 .authorName(commitOpt.map(GitCommitEntity::getAuthorName).orElse("未知"));
 
         try {
-            // 步骤 1: git diff 提取变更文件
+            // 步骤 1: git diff 提取变更文件（含实际代码变更行）
             onProgress.accept("步骤 1/3: 分析文件变更...");
             List<String> changedFiles = getChangedFiles(repoPath, commitHash);
             if (changedFiles.isEmpty()) {
@@ -75,6 +76,7 @@ public class ImpactAnalysisService {
                 return ImpactReport.failed("未检测到文件变更");
             }
             builder.changedFiles(changedFiles);
+            String diffContent = getDiffContent(repoPath, commitHash);
 
             // 步骤 2: 单次遍历文件，同时收集变更方法和调用方（避免两次 DB 查询）
             onProgress.accept("步骤 2/3: 追踪变更方法的影响范围...");
@@ -84,11 +86,11 @@ public class ImpactAnalysisService {
             builder.changedMethods(new ArrayList<>(changedMethods));
             builder.affectedCallers(callersByFile);
 
-            // 步骤 3: LLM 合成报告
+            // 步骤 3: LLM 合成报告（含实际 diff 内容）
             onProgress.accept("步骤 3/3: 生成影响分析报告...");
             String report = generateReport(repoName, commitHash,
                     commitOpt.map(GitCommitEntity::getMessage).orElse(""),
-                    changedFiles, callersByFile);
+                    changedFiles, callersByFile, diffContent);
             builder.llmReport(report != null ? report : "报告生成失败");
 
             builder.success(true);
@@ -172,9 +174,78 @@ public class ImpactAnalysisService {
         }
     }
 
+    /**
+     * 获取 commit 的变更内容（实际增/删的代码行）。
+     * 用于 LLM 分析变更实质，而非只看文件路径。
+     */
+    private String getDiffContent(String repoPath, String commitHash) {
+        File repoDir = new File(repoPath);
+        if (!new File(repoDir, ".git").exists()) return "";
+
+        try (Git git = Git.open(repoDir)) {
+            org.eclipse.jgit.lib.AnyObjectId commitId = git.getRepository().resolve(commitHash);
+            if (commitId == null) return "";
+
+            RevCommit commit = new RevWalk(git.getRepository()).parseCommit(commitId);
+            if (commit.getParentCount() == 0) return "（初始提交，无 diff）";
+
+            StringBuilder sb = new StringBuilder();
+            int totalLines = 0;
+
+            try (DiffFormatter formatter = new DiffFormatter(DisabledOutputStream.INSTANCE)) {
+                formatter.setRepository(git.getRepository());
+                formatter.setDetectRenames(true);
+                formatter.setDiffComparator(new org.eclipse.jgit.diff.RawTextComparator() {
+                    // 使用默认比较器
+                });
+                formatter.setContextLines(3); // 3 行上下文
+
+                List<DiffEntry> diffs = formatter.scan(
+                        prepareTreeParser(git.getRepository(), commit.getParent(0)),
+                        prepareTreeParser(git.getRepository(), commit));
+
+                for (DiffEntry diff : diffs) {
+                    if (totalLines >= MAX_DIFF_LINES) break;
+
+                    try (org.eclipse.jgit.diff.EditList editList = formatter.toFileHeader(diff).toEditList()) {
+                        if (editList.isEmpty()) continue;
+
+                        String path = diff.getNewPath();
+                        if (path.equals("/dev/null")) path = diff.getOldPath();
+                        sb.append("--- ").append(path).append('\n');
+
+                        // 通过 ByteArrayOutputStream 获取格式化的 diff 文本
+                        try (java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
+                            formatter.format(diff, out);
+                            String text = out.toString(java.nio.charset.StandardCharsets.UTF_8);
+                            int linesInFile = text.split("\n").length;
+                            if (totalLines + linesInFile <= MAX_DIFF_LINES) {
+                                sb.append(text);
+                                totalLines += linesInFile;
+                            } else {
+                                int remaining = MAX_DIFF_LINES - totalLines;
+                                String[] lines = text.split("\n");
+                                for (int i = 0; i < Math.min(remaining, lines.length); i++) {
+                                    sb.append(lines[i]).append('\n');
+                                }
+                                totalLines = MAX_DIFF_LINES;
+                            }
+                        }
+                    }
+                }
+            }
+            return sb.toString();
+
+        } catch (Exception e) {
+            log.warn("获取 diff 内容失败: {}", e.getMessage());
+            return "";
+        }
+    }
+
     private String generateReport(String projectName, String commitHash, String commitMsg,
                                    List<String> changedFiles,
-                                   Map<String, List<String>> callersByFile) {
+                                   Map<String, List<String>> callersByFile,
+                                   String diffContent) {
         if (changedFiles == null || changedFiles.isEmpty()) return "无变更文件，无法生成报告";
 
         try {
@@ -195,11 +266,14 @@ public class ImpactAnalysisService {
                     调用链影响：
                     %s
 
-                    请输出 JSON 格式：
+                    实际变更代码（diff）：
+                    %s
+
+                    请基于实际变更代码分析影响范围，输出 JSON 格式：
                     {
-                      "summary": "一句话总结变更内容",
+                      "summary": "一句话总结变更内容（基于 diff 实际改动）",
                       "risk_level": "LOW/MEDIUM/HIGH/CRITICAL",
-                      "risk_reason": "风险等级的理由",
+                      "risk_reason": "风险等级的理由（基于变更代码的判断）",
                       "affected_services": ["受影响的模块或服务"],
                       "affected_interfaces": ["受影响的接口或方法"],
                       "recommended_actions": ["建议 1：...", "建议 2：..."],
@@ -209,7 +283,8 @@ public class ImpactAnalysisService {
                     projectName != null ? projectName.replace("%", "%%") : "",
                     commitHash, commitMsg != null ? commitMsg.replace("%", "%%") : "",
                     changedFiles.size(), changedFilesStr.replace("%", "%%"),
-                    callersStr.replace("%", "%%")
+                    callersStr.replace("%", "%%"),
+                    diffContent != null ? diffContent.replace("%", "%%") : "（无 diff 内容）"
             );
 
             ChatRequest request = ChatRequest.builder()

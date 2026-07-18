@@ -164,6 +164,7 @@ function renderContent(text) {
     .replace(/\[片段(\d+)\]/g, '<span class="code-ref">📎 [$1]</span>')
 }
 
+
 onUnmounted(() => { if (es) es.close() })
 </script>
 

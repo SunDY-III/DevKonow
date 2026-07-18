@@ -39,6 +39,7 @@ public class CodeIndexModeService {
 
     private CodeIndexMode parseMode(String mode) {
         if ("scip".equalsIgnoreCase(mode)) return CodeIndexMode.SCIP;
+        if ("hybrid".equalsIgnoreCase(mode)) return CodeIndexMode.HYBRID;
         return CodeIndexMode.TREE_SITTER;
     }
 
@@ -79,6 +80,14 @@ public class CodeIndexModeService {
             switchingStatus.set(null);
             log.info("模式切换: tree-sitter（立即生效）");
             return new SwitchResult(true, "已切换为 Tree-sitter 模式", false);
+        }
+
+        if (targetMode == CodeIndexMode.HYBRID) {
+            currentMode.set(CodeIndexMode.HYBRID);
+            switchingStatus.set(null);
+            if (projectDir != null) this.currentProjectDir = projectDir;
+            log.info("模式切换: hybrid（SCIP 优先，Tree-sitter 降级）");
+            return new SwitchResult(true, "已切换为 Hybrid 模式（SCIP 优先，自动降级 Tree-sitter）", false);
         }
 
         // 切换到 SCIP

@@ -54,6 +54,12 @@ public class LlmConfig {
     @Value("${llm.embedding-base-url}") private String embBaseUrl;
     @Value("${llm.embedding-api-key}")  private String embApiKey;
     @Value("${llm.embedding-model}")    private String embModel;
+
+    // ---- 代码专用 embedding（独立模型，如 code-search-ada / starencoder） ----
+    @Value("${llm.code-embedding-base-url:${llm.embedding-base-url}}")  private String codeEmbBaseUrl;
+    @Value("${llm.code-embedding-api-key:${llm.embedding-api-key}}")   private String codeEmbApiKey;
+    @Value("${llm.code-embedding-model:text-embedding-3-small}")        private String codeEmbModel;
+
     @Value("${llm.max-concurrency}")    private int maxConcurrency;
 
     // ---- 第三方 GPT 中转常用的可选项（不需要就留默认空值） ----
@@ -131,20 +137,46 @@ public class LlmConfig {
         return builder.build();
     }
 
+    /**
+     * 文档/通用 embedding 模型（用于 RAG 检索）。
+     * 通常用 text-embedding-3-small 或 text-embedding-3-large。
+     */
     @Bean
-    public EmbeddingModel embeddingModel() {
+    public EmbeddingModel docEmbeddingModel() {
         var builder = OpenAiEmbeddingModel.builder()
-                .baseUrl(embBaseUrl).apiKey(resolveKey(embApiKey, "embedding")).modelName(embModel)
+                .baseUrl(embBaseUrl).apiKey(resolveKey(embApiKey, "doc-embedding")).modelName(embModel)
                 .timeout(Duration.ofSeconds(embTimeoutSeconds))
                 .maxRetries(maxRetries)
                 .logRequests(logRequests).logResponses(logResponses);
-        // text-embedding-3-small / -large 支持自定义维度；留 <=0 用模型默认值
         if (embDimensions > 0) builder.dimensions(embDimensions);
         if (StringUtils.hasText(organizationId)) builder.organizationId(organizationId.trim());
         Map<String, String> headers = parseCustomHeaders();
         if (!headers.isEmpty()) builder.customHeaders(headers);
-        log.info("Embedding 模型装配完成：base-url={}, model={}, dimensions={}",
+        log.info("文档 Embedding 模型装配完成：base-url={}, model={}, dimensions={}",
                 embBaseUrl, embModel, embDimensions > 0 ? embDimensions : "default");
+        return builder.build();
+    }
+
+    /**
+     * 代码专用 embedding 模型（用于代码索引）。
+     * 可配置代码专用模型（如 code-search-ada 或 starencoder），
+     * 与文档模型分离以提高代码检索精度。
+     * 默认复用文档 embedding 配置。
+     */
+    @Bean
+    public EmbeddingModel codeEmbeddingModel() {
+        var builder = OpenAiEmbeddingModel.builder()
+                .baseUrl(codeEmbBaseUrl).apiKey(resolveKey(codeEmbApiKey, "code-embedding")).modelName(codeEmbModel)
+                .timeout(Duration.ofSeconds(embTimeoutSeconds))
+                .maxRetries(maxRetries)
+                .logRequests(logRequests).logResponses(logResponses);
+        // 代码索引使用固定维度（与存储的向量维度一致）
+        if (embDimensions > 0) builder.dimensions(embDimensions);
+        if (StringUtils.hasText(organizationId)) builder.organizationId(organizationId.trim());
+        Map<String, String> headers = parseCustomHeaders();
+        if (!headers.isEmpty()) builder.customHeaders(headers);
+        log.info("代码 Embedding 模型装配完成：base-url={}, model={}, dimensions={}",
+                codeEmbBaseUrl, codeEmbModel, embDimensions > 0 ? embDimensions : "default");
         return builder.build();
     }
 

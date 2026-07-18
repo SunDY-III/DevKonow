@@ -1,12 +1,17 @@
 package com.devknow.cache;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.devknow.vector.QdrantClientManager;
+import com.devknow.vector.ScoredChunk;
 import com.devknow.vector.VectorStoreService;
+import io.qdrant.client.QdrantClient;
+import io.qdrant.client.grpc.Points;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.Cursor;
 import org.springframework.data.redis.core.ScanOptions;
@@ -14,17 +19,28 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+
+import static io.qdrant.client.PointIdFactory.id;
+import static io.qdrant.client.ValueFactory.value;
+import static io.qdrant.client.VectorsFactory.vectors;
 
 /**
  * 语义缓存：相似问题（向量相似度 >= 阈值）直接命中历史回答，省 Token、降延迟。
  *
- * 三个设计点（面试点）：
- * 1. 阈值偏保守（默认 0.95）：宁可漏命中走一次 LLM，也不要误命中答非所问；
- * 2. 命中回答前端展示“来自历史相似问题”标识，用户可强制重新生成；
- * 3. 失效联动：缓存条目记录其依据的 docId 列表，知识库按文档维度变更时定向清除，
- *    避免“文档已更新、缓存还在答旧内容”。
+ * <p>查找使用 Qdrant 近似度搜索替代 Redis SCAN 全量遍历：将缓存的 query 向量存入 Qdrant
+ * <code>cache_vectors</code> collection，查找时走 ANN 索引 O(log n)，而非 SCAN O(n)。
+ *
+ * <p>三个设计点（面试点）：
+ * <ol>
+ *   <li>阈值偏保守（默认 0.95）：宁可漏命中走一次 LLM，也不要误命中答非所问；</li>
+ *   <li>命中回答前端展示"来自历史相似问题"标识，用户可强制重新生成；</li>
+ *   <li>失效联动：缓存条目记录其依据的 docId 列表，知识库按文档维度变更时定向清除，
+ *       避免"文档已更新、缓存还在答旧内容"。</li>
+ * </ol>
  */
 @Slf4j
 @Service
@@ -32,9 +48,12 @@ import java.util.Optional;
 public class SemanticCacheService {
 
     private static final String KEY_PREFIX = "sem:cache:";
+    private static final String CACHE_COLLECTION = "cache_vectors";
+    private static final int QDRANT_SEARCH_LIMIT = 10;
 
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final QdrantClientManager qdrantManager;
 
     @Value("${app.semantic-cache.threshold}") private double threshold;
     @Value("${app.semantic-cache.ttl-hours}") private long ttlHours;
@@ -48,11 +67,60 @@ public class SemanticCacheService {
         private List<Long> sourceDocIds;
     }
 
+    /**
+     * 语义缓存查找：优先用 Qdrant ANN 索引，降级到 Redis SCAN。
+     */
     public Optional<CacheEntry> lookup(float[] queryVector) {
+        // 策略 1：Qdrant ANN 搜索（O(log n)，推荐路径）
+        QdrantClient qdrant = qdrantManager.getClient();
+        if (qdrant != null) {
+            try {
+                List<Float> vectorList = new ArrayList<>(queryVector.length);
+                for (float v : queryVector) vectorList.add(v);
+
+                Points.SearchPoints.Builder builder = Points.SearchPoints.newBuilder()
+                        .setCollectionName(CACHE_COLLECTION)
+                        .addAllVector(vectorList)
+                        .setLimit(QDRANT_SEARCH_LIMIT)
+                        .setWithPayload(Points.WithPayloadSelector.newBuilder().setEnable(true).build());
+
+                List<Points.ScoredPoint> results = qdrant.searchAsync(builder.build())
+                        .get(3, TimeUnit.SECONDS);
+
+                for (Points.ScoredPoint result : results) {
+                    if (result.getScore() >= threshold) {
+                        // 从 payload 中的 redisKey 获取完整条目
+                        String redisKey = result.getPayloadOrDefault("redis_key", value("")).getStringValue();
+                        if (!redisKey.isEmpty()) {
+                            String json = redis.opsForValue().get(redisKey);
+                            if (json != null) {
+                                try {
+                                    CacheEntry entry = objectMapper.readValue(json, CacheEntry.class);
+                                    log.info("semantic cache HIT (Qdrant), score={:.4f}, key={}",
+                                            result.getScore(), redisKey);
+                                    return Optional.of(entry);
+                                } catch (Exception ignored) {}
+                            }
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("Qdrant 语义缓存查询失败，降级到 Redis SCAN: {}", e.getMessage());
+            }
+        }
+
+        // 策略 2：Redis SCAN 降级（兼容路径，与旧缓存兼容）
+        return lookupViaRedis(queryVector);
+    }
+
+    /**
+     * Redis SCAN 降级查找（保留原实现作为兼容）。
+     */
+    private Optional<CacheEntry> lookupViaRedis(float[] queryVector) {
         CacheEntry best = null;
         double bestScore = 0;
         int scanned = 0;
-        int maxScan = 500;  // 性能上限：最多扫描 500 条，防止缓存膨胀后每次请求全量遍历
+        int maxScan = 500;
         try (Cursor<String> cursor = redis.scan(ScanOptions.scanOptions().match(KEY_PREFIX + "*").count(100).build())) {
             while (cursor.hasNext() && scanned < maxScan) {
                 String json = redis.opsForValue().get(cursor.next());
@@ -62,15 +130,16 @@ public class SemanticCacheService {
                     CacheEntry e = objectMapper.readValue(json, CacheEntry.class);
                     double score = VectorStoreService.cosine(queryVector, e.getVector());
                     if (score > bestScore) { bestScore = score; best = e; }
-                    if (score > 0.99) break;  // 极高相似度提前终止
-                } catch (Exception ignore) { }
+                    if (score > 0.99) break;
+                } catch (Exception ignored) { }
             }
         }
         if (scanned >= maxScan) {
-            log.warn("semantic cache scan reached limit {}, consider adding index", maxScan);
+            log.warn("semantic cache scan reached limit {}", maxScan);
         }
         if (best != null && bestScore >= threshold) {
-            log.info("semantic cache HIT, score={}, q={}", String.format("%.4f", bestScore), best.getQuestion());
+            log.info("semantic cache HIT (Redis fallback), score={:.4f}, q={}",
+                    bestScore, best.getQuestion());
             return Optional.of(best);
         }
         return Optional.empty();
@@ -83,12 +152,37 @@ public class SemanticCacheService {
         e.setAnswer(answer);
         e.setVector(vector);
         e.setSourceDocIds(sourceDocIds);
-        redis.opsForValue().set(KEY_PREFIX + Math.abs(question.hashCode()) + ":" + System.currentTimeMillis(),
+
+        // Redis：完整条目存储（含 TTL）
+        String redisKey = KEY_PREFIX + Math.abs(question.hashCode()) + ":" + System.currentTimeMillis();
+        redis.opsForValue().set(redisKey,
                 objectMapper.writeValueAsString(e), Duration.ofHours(ttlHours));
+
+        // Qdrant：向量 + 索引（用于近似度查找）
+        QdrantClient qdrant = qdrantManager.getClient();
+        if (qdrant != null) {
+            try {
+                long pointId = (long) redisKey.hashCode();
+                float[] vec = e.getVector();
+                List<Float> qVec = new ArrayList<>(vec.length);
+                for (float v : vec) qVec.add(v);
+
+                qdrant.upsertAsync(CACHE_COLLECTION, List.of(
+                        Points.PointStruct.newBuilder()
+                                .setId(id(pointId))
+                                .setVectors(vectors(qVec))
+                                .putPayload("redis_key", value(redisKey))
+                                .build()
+                )).get(3, TimeUnit.SECONDS);
+            } catch (Exception ex) {
+                log.warn("Qdrant 缓存向量写入失败: {}", ex.getMessage());
+            }
+        }
     }
 
     /** 知识库文档变更 -> 清除依据该文档生成的缓存条目 */
     public void invalidateByDoc(Long docId) {
+        int deleted = 0;
         try (Cursor<String> cursor = redis.scan(ScanOptions.scanOptions().match(KEY_PREFIX + "*").count(200).build())) {
             while (cursor.hasNext()) {
                 String key = cursor.next();
@@ -98,9 +192,13 @@ public class SemanticCacheService {
                     CacheEntry e = objectMapper.readValue(json, CacheEntry.class);
                     if (e.getSourceDocIds() != null && e.getSourceDocIds().contains(docId)) {
                         redis.delete(key);
+                        deleted++;
                     }
-                } catch (Exception ignore) { }
+                } catch (Exception ignored) { }
             }
+        }
+        if (deleted > 0) {
+            log.info("语义缓存失效: {} 条因 docId={}", deleted, docId);
         }
     }
 }

@@ -1,8 +1,13 @@
 package com.devknow.codereview;
 
+import com.devknow.codeindex.CodeMethodCallRepository;
+import com.devknow.codeindex.GitRepoManager;
+import com.devknow.project.CodeProjectRepository;
 import com.devknow.common.BizException;
+import com.devknow.project.CodeProject;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -10,6 +15,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * 代码审查 Agent 工具集。
@@ -18,7 +26,12 @@ import java.nio.file.Paths;
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class CodeTools {
+
+    private final GitRepoManager gitRepoManager;
+    private final CodeProjectRepository projectRepository;
+    private final CodeMethodCallRepository methodCallRepo;
 
     /** 每会话工具调用轮次上限 */
     private static final int MAX_ROUNDS = 4;
@@ -94,5 +107,118 @@ public class CodeTools {
             return "搜索失败: " + e.getMessage();
         }
         return result.isEmpty() ? "未找到匹配文件" : result.toString();
+    }
+
+    @Tool("查询指定方法的调用链：哪些文件调用了该方法。可用于理解代码的影响范围。")
+    public String queryCallGraph(@P("项目 ID（数字）") Long projectId,
+                                  @P("方法名（如 createOrder）") String methodName) {
+        guard("queryCallGraph", projectId + ":" + methodName);
+        try {
+            List<String> callers = methodCallRepo.findCallersByMethodName(projectId, methodName);
+            if (callers == null || callers.isEmpty()) {
+                return "没有找到调用「" + methodName + "」的文件";
+            }
+            StringBuilder sb = new StringBuilder();
+            sb.append("调用「").append(methodName).append("」的文件列表：\n");
+            for (String file : callers) {
+                sb.append("  • ").append(file).append('\n');
+            }
+            log.info("[agent] queryCallGraph: projectId={}, method={}, callers={}",
+                    projectId, methodName, callers.size());
+            return sb.toString();
+        } catch (Exception e) {
+            return "查询调用链失败: " + e.getMessage();
+        }
+    }
+
+    @Tool("获取指定项目的 Git 变更 diff。可用于分析代码变更内容。")
+    public String gitDiff(@P("projectId 项目 ID") Long projectId,
+                          @P("commitHash 提交哈希") String commitHash) {
+        guard("gitDiff", projectId + ":" + commitHash);
+        try {
+            CodeProject project = projectRepository.findById(projectId).orElse(null);
+            if (project == null) return "项目不存在: " + projectId;
+
+            String repoUrl = project.getRepoUrls();
+            if (repoUrl == null) return "项目 URL 为空";
+            String repoName = GitRepoManager.extractRepoName(
+                    repoUrl.replaceAll("[\\[\\]\"]", "").split(",")[0]);
+            Path repoPath = gitRepoManager.getRepoPath(projectId, repoName);
+            if (!repoPath.toFile().exists()) return "本地仓库不存在";
+
+            // 使用 JGit 获取 diff
+            try (org.eclipse.jgit.api.Git git = org.eclipse.jgit.api.Git.open(repoPath.toFile());
+                 org.eclipse.jgit.revwalk.RevWalk revWalk = new org.eclipse.jgit.revwalk.RevWalk(git.getRepository())) {
+
+                org.eclipse.jgit.lib.AnyObjectId commitId = git.getRepository().resolve(commitHash);
+                if (commitId == null) return "Commit 不存在: " + commitHash;
+
+                org.eclipse.jgit.revwalk.RevCommit commit = revWalk.parseCommit(commitId);
+                if (commit.getParentCount() == 0) return "初始提交，没有父 commit 可对比";
+
+                org.eclipse.jgit.revwalk.RevCommit parent = commit.getParent(0);
+                StringBuilder sb = new StringBuilder();
+                sb.append("Diff for ").append(commitHash).append(":\n");
+
+                try (org.eclipse.jgit.diff.DiffFormatter formatter =
+                             new org.eclipse.jgit.diff.DiffFormatter(org.eclipse.jgit.util.io.DisabledOutputStream.INSTANCE)) {
+                    formatter.setRepository(git.getRepository());
+                    formatter.setDetectRenames(true);
+                    formatter.setContextLines(3);
+
+                    List<org.eclipse.jgit.diff.DiffEntry> diffs = formatter.scan(
+                            parent.getTree(), commit.getTree());
+
+                    for (org.eclipse.jgit.diff.DiffEntry diff : diffs) {
+                        String path = diff.getNewPath();
+                        if (path.equals("/dev/null")) path = diff.getOldPath();
+                        sb.append("\n--- ").append(diff.getChangeType()).append(" ").append(path).append('\n');
+                    }
+                }
+
+                log.info("[agent] gitDiff: projectId={}, commit={}, files={}",
+                        projectId, commitHash, sb.length());
+                return sb.toString();
+            }
+        } catch (Exception e) {
+            return "获取 diff 失败: " + e.getMessage();
+        }
+    }
+
+    @Tool("批量扫描多个文件。比逐次调用 scanFile 更高效，适合需要同时分析多个关联文件时使用。")
+    public String batchScanFiles(@P("文件路径列表（用逗号分隔）") String filePaths) {
+        guard("batchScanFiles", filePaths);
+        try {
+            String[] paths = filePaths.split(",");
+            List<String> results = new ArrayList<>();
+            int totalChars = 0;
+            final int MAX_TOTAL = 500_000; // 总读取上限
+
+            for (String fp : paths) {
+                if (totalChars >= MAX_TOTAL) {
+                    results.add("=== " + fp.trim() + " ===\n（已超总读取上限，跳过）");
+                    continue;
+                }
+                String filePath = fp.trim();
+                Path path = Paths.get(filePath);
+                if (!path.toFile().exists()) {
+                    results.add("=== " + filePath + " ===\n文件不存在");
+                    continue;
+                }
+                String content = Files.readString(path, StandardCharsets.UTF_8);
+                if (content.length() > 100_000) {
+                    content = content.substring(0, 100_000) + "\n...（截断）";
+                }
+                totalChars += content.length();
+                results.add("=== " + filePath + " ===\n" + content);
+            }
+
+            String result = String.join("\n\n", results);
+            log.info("[agent] batchScanFiles: {} files, {} total chars", paths.length, totalChars);
+            return result;
+
+        } catch (Exception e) {
+            return "批量读取失败: " + e.getMessage();
+        }
     }
 }

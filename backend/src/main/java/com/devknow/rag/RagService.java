@@ -17,6 +17,7 @@ import com.devknow.vector.VectorStoreService;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -28,10 +29,14 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class RagService {
 
+    @Qualifier("docEmbeddingModel")
     private final EmbeddingModel embeddingModel;
     private final VectorStoreService vectorStoreService;
     private final DocumentChunkRepository chunkRepository;
     private final Reranker reranker;
+    private final CrossEncoderReranker crossEncoderReranker;
+    private final HydeGenerator hydeGenerator;
+    private final CorrectiveEvaluator correctiveEvaluator;
     private final MmrSelector mmrSelector;
     private final QueryExpander queryExpander;
     private final TokenAuditService tokenAuditService;
@@ -82,11 +87,11 @@ public class RagService {
     }
 
     /**
-     * 构建图谱文档关联关系。
-     * 返回 Map<docId, Set<relatedDocId>>，用于图感知 MMR 的 α 衰减。
+     * 构建图谱文档关联关系（含跳数 hops）。
+     * 返回 Map<docId, Map<relatedDocId, hops>>，用于图感知 MMR 的 α 衰减。
      */
-    private Map<Long, Set<Long>> buildGraphRelationMap(List<ScoredChunk> candidates, int maxHops) {
-        Map<Long, Set<Long>> relationMap = new HashMap<>();
+    private Map<Long, Map<Long, Integer>> buildGraphRelationMap(List<ScoredChunk> candidates, int maxHops) {
+        Map<Long, Map<Long, Integer>> relationMap = new HashMap<>();
         Set<Long> seen = new HashSet<>();
         for (ScoredChunk c : candidates) {
             Long docId = c.getDocId();
@@ -94,11 +99,14 @@ public class RagService {
             try {
                 List<GraphRelationResult> related = knowledgeGraphService.findRelated(docId, maxHops);
                 if (!related.isEmpty()) {
-                    Set<Long> relatedIds = new HashSet<>();
+                    Map<Long, Integer> relatedWithHops = new HashMap<>();
                     for (GraphRelationResult r : related) {
-                        relatedIds.add(r.getDocId());
+                        // 取最短跳数（多个路径时最短的优先）
+                        Long relatedDocId = r.getDocId();
+                        int hops = r.getHops();
+                        relatedWithHops.merge(relatedDocId, hops, Math::min);
                     }
-                    relationMap.put(docId, relatedIds);
+                    relationMap.put(docId, relatedWithHops);
                 }
             } catch (Exception e) {
                 log.debug("图谱关联查询失败 docId={}: {}", docId, e.getMessage());
@@ -170,8 +178,11 @@ public class RagService {
         double confidence = plan.getAdjustedConfidence();
         boolean needRouteB = plan.isNeedRouteB();
 
-        // 步骤 4: 向量搜索（A 路）
-        float[] queryVector = embed(userId, question);
+        // 步骤 3.5: HyDE — 生成假设文档提升检索召回
+        String hydeQuery = hydeGenerator.generateHypothesis(question);
+
+        // 步骤 4: 向量搜索（A 路）— 使用 HyDE 增强后的查询
+        float[] queryVector = embed(userId, hydeQuery);
         List<ScoredChunk> vectorHits = new ArrayList<>(vectorStoreService.searchByLevels(queryVector, vectorTopK, searchLevels));
         for (ScoredChunk c : vectorHits) c.setSource("");
 
@@ -224,20 +235,37 @@ public class RagService {
                 (docId, chunkId) -> vectorMap.get(String.valueOf(chunkId)),
                 adaptiveLambda, rerankTopN, graphRelationMap);
 
-        // 步骤 8: 代码结构感知重排序 + 图谱扩展
+        // 步骤 8: 代码结构感知重排序 + Cross-encoder 精排 + 图谱扩展
         List<ScoredChunk> topN = reranker.rerank(question, diverse, rerankTopN, projectId);
-        List<ScoredChunk> expanded = graphExpander.expand(topN, 3, 2);
+        List<ScoredChunk> ceRanked = crossEncoderReranker.rerank(question, topN, rerankTopN);
+        List<ScoredChunk> expanded = graphExpander.expand(ceRanked, 3, 2);
 
-        // 置信度计算：多因子加权
+        // 步骤 9: CRAG 纠错评估 — 评估检索质量，触发补搜或降级
         confidence = calculateConfidence(vectorHits, keywordHits, fused, confidence);
+        CorrectiveEvaluator.EvaluationResult cragResult = correctiveEvaluator.evaluate(
+                expanded, question,
+                originalResults -> {
+                    // 补搜策略：放宽层级范围 + 扩大候选池
+                    int[] broaderLevels = new int[]{1, 2, 3, 4, 5};
+                    float[] retryVector = embed(userId, question);
+                    List<ScoredChunk> retryHits = vectorStoreService.searchByLevels(retryVector, vectorTopK * 2, broaderLevels);
+                    if (!retryHits.isEmpty()) {
+                        for (ScoredChunk c : retryHits) c.setSource("retry");
+                    }
+                    return retryHits;
+                });
 
-        log.info("levelAwareRetrieve: q={}, role={}, level={}, conf={}, A_hits={}, B={}, MMR(lambda={})={}/{}, pool={}, graphRelated={}, expanded={}",
+        List<ScoredChunk> finalChunks = cragResult.verdict() == CorrectiveEvaluator.EvaluationVerdict.LOW_CONFIDENCE
+                ? List.of()   // 低置信 → 让 ChatService 走 Agent 兜底
+                : cragResult.chunks();
+
+        log.info("levelAwareRetrieve: q={}, role={}, level={}, conf={}, A_hits={}, B={}, CRAG={}, MMR(lambda={})={}/{}, pool={}, graphRelated={}, expanded={}",
                 question, userRole, targetLevel, String.format("%.2f", confidence),
-                vectorHits.size(), needRouteB, String.format("%.2f", adaptiveLambda),
+                vectorHits.size(), needRouteB, cragResult.verdict(), String.format("%.2f", adaptiveLambda),
                 diverse.size(), candidates.size(), candidatePoolSize,
                 graphRelationMap.size(), expanded.size() - topN.size());
 
-        return new RagResult(expanded, confidence);
+        return new RagResult(finalChunks, confidence);
     }
 
     /**
