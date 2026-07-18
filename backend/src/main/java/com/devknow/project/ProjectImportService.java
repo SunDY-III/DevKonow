@@ -55,7 +55,7 @@ public class ProjectImportService {
      * @param projectId 项目 ID
      * @return 锁标识（解锁时需要），获取失败返回 null
      */
-    private String tryReindexLock(Long projectId) {
+    public String tryReindexLock(Long projectId) {
         if (projectId == null) return null;
         String lockKey = LOCK_PREFIX + projectId;
         String lockValue = UUID.randomUUID().toString();  // 唯一标识，解锁时校验
@@ -71,7 +71,7 @@ public class ProjectImportService {
     /**
      * 释放项目重建锁（Lua 脚本安全释放，只删除属于自己的锁）。
      */
-    private void releaseReindexLock(Long projectId, String lockValue) {
+    public void releaseReindexLock(Long projectId, String lockValue) {
         if (projectId == null || lockValue == null) return;
         String lockKey = LOCK_PREFIX + projectId;
         // Lua 脚本：比较 value 一致才删除，防止误删其他线程的锁
@@ -231,6 +231,71 @@ public class ProjectImportService {
             sendProgress(emitter, closed, "done", "重新索引完成！", 100);
             sendProjectEvent(emitter, closed, project);
 
+        } finally {
+            releaseReindexLock(projectId, lockValue);
+        }
+    }
+
+    // ======================== Webhook 推送 ========================
+
+    /**
+     * Webhook 推送触发：Git 平台收到 push 事件后调用。
+     * <p>
+     * 只做增量重建（pull + diff → 波及重建），不做全量。
+     * 使用 Redis 分布式锁防止同一项目并发重建。
+     *
+     * @param repoUrl 仓库 URL（从 webhook payload 中提取）
+     * @return 操作结果描述
+     */
+    public String handleWebhookPush(String repoUrl) {
+        if (repoUrl == null || repoUrl.isBlank()) return "仓库地址为空";
+
+        CodeProject project = findExistingProject(repoUrl);
+        if (project == null) return "项目未导入，忽略";
+
+        Long projectId = project.getId();
+        String lockValue = tryReindexLock(projectId);
+        if (lockValue == null) return "项目正在重建中，忽略本次推送";
+
+        try {
+            String repoName = GitRepoManager.extractRepoName(repoUrl);
+            Path localPath = gitRepoManager.getRepoPath(projectId, repoName);
+
+            if (!localPath.toFile().exists()) return "本地仓库不存在，请重新导入";
+
+            gitRepoManager.pull(localPath);
+
+            String currentHead = gitRepoManager.getHeadCommitHash(localPath);
+            String lastCommit = gitRepoManager.getLastIndexedCommit(projectId, redis);
+            if (currentHead != null && currentHead.equals(lastCommit)) {
+                return "代码已是最新，无需重建";
+            }
+
+            redis.opsForValue().set("index:status:" + projectId, "INDEXING");
+
+            if (lastCommit == null) {
+                codeIndexService.indexProject(projectId, repoName, localPath, null, null);
+            } else {
+                List<String> changedFiles = gitRepoManager.diffChangedFiles(localPath, lastCommit);
+                if (changedFiles.isEmpty()) {
+                    String ts = redis.opsForValue().get("index:timestamp:" + projectId);
+                    if (ts != null) {
+                        changedFiles = gitRepoManager.diffSinceTimestamp(localPath, Long.parseLong(ts));
+                    }
+                }
+                codeIndexService.indexIncremental(projectId, repoName, localPath, changedFiles);
+            }
+
+            projectRepository.save(project);
+            redis.delete("index:status:" + projectId);
+
+            log.info("Webhook 重建完成: projectId={}, repoUrl={}", projectId, repoUrl);
+            return "ok";
+
+        } catch (Exception e) {
+            log.error("Webhook 重建失败: projectId={}", projectId, e);
+            redis.delete("index:status:" + projectId);
+            return "重建失败: " + e.getMessage();
         } finally {
             releaseReindexLock(projectId, lockValue);
         }

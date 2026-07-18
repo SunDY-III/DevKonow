@@ -1,0 +1,102 @@
+[
+  {
+    "id": 1, "question": "订单超时怎么处理", "level": 3, "route": "both",
+    "role": "DEVELOPER", "expectedKeywords": ["超时", "订单", "timeout", "处理"],
+    "difficulty": "easy", "tags": ["common", "e-commerce"]
+  },
+  {
+    "id": 2, "question": "createOrder 方法在哪", "level": 5, "route": "code",
+    "role": "DEVELOPER", "expectedKeywords": ["createOrder", "方法"],
+    "difficulty": "easy", "tags": ["code-search", "method"]
+  },
+  {
+    "id": 3, "question": "支付网关为什么限流", "level": 3, "route": "both",
+    "role": "DEVELOPER", "expectedKeywords": ["支付", "限流", "网关", "gateway"],
+    "difficulty": "medium", "tags": ["e-commerce", "system-design"]
+  },
+  {
+    "id": 4, "question": "说说整个订单系统的架构设计", "level": 1, "route": "doc",
+    "role": "ARCHITECT", "expectedKeywords": ["订单", "架构", "设计", "模块"],
+    "difficulty": "medium", "tags": ["architecture", "overview"]
+  },
+  {
+    "id": 5, "question": "退款接口调用了哪些服务", "level": 4, "route": "code",
+    "role": "SENIOR_DEV", "expectedKeywords": ["退款", "refund", "调用", "服务"],
+    "difficulty": "medium", "tags": ["code-search", "call-chain"]
+  },
+  {
+    "id": 6, "question": "为什么要用 RabbitMQ 而不是 Kafka", "level": 2, "route": "doc",
+    "role": "ARCHITECT", "expectedKeywords": ["RabbitMQ", "Kafka", "消息队列", "选型"],
+    "difficulty": "medium", "tags": ["technology-choice", "architecture"]
+  },
+  {
+    "id": 7, "question": "如何新增一个营销活动类型", "level": 3, "route": "both",
+    "role": "DEVELOPER", "expectedKeywords": ["营销", "活动", "新增", "类型"],
+    "difficulty": "medium", "tags": ["development", "guide"]
+  },
+  {
+    "id": 8, "question": "数据库连接池配置参数说明", "level": 3, "route": "doc",
+    "role": "DEVELOPER", "expectedKeywords": ["连接池", "数据库", "配置", "datasource"],
+    "difficulty": "easy", "tags": ["configuration", "database"]
+  },
+  {
+    "id": 9, "question": "怎么保证支付结果的幂等性", "level": 4, "route": "doc",
+    "role": "SENIOR_DEV", "expectedKeywords": ["幂等", "支付", "去重", "保证"],
+    "difficulty": "hard", "tags": ["system-design", "payment"]
+  },
+  {
+    "id": 10, "question": "第三行为什么抛 NullPointerException", "level": 5, "route": "code",
+    "role": "DEVELOPER", "expectedKeywords": ["NullPointerException", "空指针", "异常"],
+    "difficulty": "hard", "tags": ["debug", "error"]
+  },
+  {
+    "id": 11, "question": "自动化部署流程是怎么样的", "level": 2, "route": "doc",
+    "role": "DEVOPS", "expectedKeywords": ["部署", "CI/CD", "流水线", "自动化"],
+    "difficulty": "easy", "tags": ["devops", "deployment"]
+  },
+  {
+    "id": 12, "question": "这段代码能优化性能吗：for(int i=0;i<list.size();i++)", "level": 5, "route": "code",
+    "role": "DEVELOPER", "expectedKeywords": ["性能", "优化", "循环", "list"],
+    "difficulty": "medium", "tags": ["code-review", "performance"]
+  },
+  {
+    "id": 13, "question": "微服务和 SOA 有什么区别", "level": 1, "route": "doc",
+    "role": "ARCHITECT", "expectedKeywords": ["微服务", "SOA", "区别", "架构"],
+    "difficulty": "medium", "tags": ["architecture", "concept"]
+  },
+  {
+    "id": 14, "question": "用户登录的 token 过期时间是多少", "level": 4, "route": "code",
+    "role": "QA", "expectedKeywords": ["token", "过期", "登录", "JWT"],
+    "difficulty": "easy", "tags": ["auth", "configuration"]
+  },
+  {
+    "id": 15, "question": "一期和二期的需求范围有哪些变化", "level": 1, "route": "doc",
+    "role": "PM", "expectedKeywords": ["需求", "范围", "变化", "版本"],
+    "difficulty": "medium", "tags": ["project", "requirement"]
+  },
+  {
+    "id": 16, "question": "接口响应时间过长怎么排查", "level": 4, "route": "both",
+    "role": "DEVOPS", "expectedKeywords": ["响应", "耗时", "排查", "监控"],
+    "difficulty": "hard", "tags": ["debug", "performance"]
+  },
+  {
+    "id": 17, "question": "这个项目的测试覆盖率是多少", "level": 3, "route": "doc",
+    "role": "QA", "expectedKeywords": ["测试", "覆盖率", "单元测试"],
+    "difficulty": "easy", "tags": ["testing", "quality"]
+  },
+  {
+    "id": 18, "question": "配置中心改了为什么没生效", "level": 4, "route": "both",
+    "role": "DEVELOPER", "expectedKeywords": ["配置", "生效", "刷新", "缓存"],
+    "difficulty": "medium", "tags": ["debug", "configuration"]
+  },
+  {
+    "id": 19, "question": "短信发送失败怎么告警", "level": 3, "route": "doc",
+    "role": "DEVOPS", "expectedKeywords": ["短信", "告警", "通知", "失败"],
+    "difficulty": "medium", "tags": ["monitoring", "alert"]
+  },
+  {
+    "id": 20, "question": "如何保证库存扣减不会超卖", "level": 2, "route": "both",
+    "role": "SENIOR_DEV", "expectedKeywords": ["库存", "扣减", "超卖", "锁"],
+    "difficulty": "hard", "tags": ["system-design", "e-commerce"]
+  }
+]
