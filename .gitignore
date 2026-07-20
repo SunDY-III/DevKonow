@@ -9,3 +9,5 @@ target/
 *.iml
 .env
 .vscode/
+.claude/
+optimization_output.json

@@ -9,6 +9,7 @@ import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.output.Response;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -22,6 +23,9 @@ import java.util.UUID;
 /**
  * 上下文窗口控制：滑动窗口保留最近 N 轮 + 超长触发“历史摘要压缩”。
  * 把早期对话用 LLM 压成一段摘要塞回 SystemMessage，控制每次请求的 Token 成本。
+ *
+ * <p>使用 fastChatLanguageModel（轻量模型），摘要压缩对生成质量要求不高，
+ * 轻量模型足以胜任且延迟更低、成本更低。
  */
 @Slf4j
 @Service
@@ -29,9 +33,11 @@ import java.util.UUID;
 public class MemoryService {
 
     private final RedisChatMemoryStore memoryStore;
-    private final ChatLanguageModel chatModel;
     private final TokenAuditService tokenAuditService;
     private final StringRedisTemplate redis;
+
+    @Qualifier("fastChatLanguageModel")
+    private final ChatLanguageModel chatModel;
 
     private static final DefaultRedisScript<Long> UNLOCK_SCRIPT = new DefaultRedisScript<>(
             "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end",

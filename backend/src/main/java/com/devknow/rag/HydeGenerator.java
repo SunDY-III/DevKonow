@@ -11,6 +11,9 @@ import org.springframework.stereotype.Component;
  * 因为假设文档的语义空间与知识库文档更接近，可以弥补查询-文档的表示鸿沟。
  *
  * <p>参考论文：Precise Zero-Shot Dense Retrieval without Relevance Labels (Gao et al., 2022)
+ *
+ * <p>使用 fastChatLanguageModel（轻量模型），HyDE 对生成质量要求不高，
+ * 只需生成风格相似的假设文档，轻量模型足以胜任且延迟更低。
  */
 @Slf4j
 @Component
@@ -18,7 +21,9 @@ public class HydeGenerator {
 
     private final dev.langchain4j.model.chat.ChatLanguageModel chatModel;
 
-    public HydeGenerator(dev.langchain4j.model.chat.ChatLanguageModel chatModel) {
+    public HydeGenerator(
+            @org.springframework.beans.factory.annotation.Qualifier("fastChatLanguageModel")
+            dev.langchain4j.model.chat.ChatLanguageModel chatModel) {
         this.chatModel = chatModel;
     }
 

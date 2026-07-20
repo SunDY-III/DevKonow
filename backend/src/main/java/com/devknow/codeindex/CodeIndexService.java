@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 代码索引服务。
@@ -219,11 +220,12 @@ public class CodeIndexService {
         log.info("波及重建: filesToReindex={} (changed={}, ripple={})",
                 filesToReindex.size(), changedFiles.size(), filesToReindex.size() - changedFiles.size());
 
-        // Step 3: 清空这些文件的旧数据，重新索引
-        int totalMethods = 0;
-        for (String filePath : filesToReindex) {
+        // Step 3: 清空这些文件的旧数据，重新索引（使用并行流加速）
+        AtomicInteger totalMethods = new AtomicInteger(0);
+        List<String> reindexList = new java.util.ArrayList<>(filesToReindex);
+        reindexList.parallelStream().forEach(filePath -> {
             Path fullPath = repoPath.resolve(filePath);
-            if (!Files.exists(fullPath)) continue;
+            if (!Files.exists(fullPath)) return;
 
             try {
                 // 删除该文件的旧索引（MySQL + Redis + ripple）
@@ -231,10 +233,10 @@ public class CodeIndexService {
 
                 // 重新索引
                 String source = Files.readString(fullPath, StandardCharsets.UTF_8);
-                if (source.isBlank()) continue;
+                if (source.isBlank()) return;
                 if (source.length() > 500_000) {
                     log.warn("波及重索引跳过超大文件: {} ({} 字符 > 500KB)", filePath, source.length());
-                    continue;
+                    return;
                 }
 
                 String ext = getExtension(filePath);
@@ -244,18 +246,18 @@ public class CodeIndexService {
                     unit.setRepoName(repoName);
                     saveCodeUnit(projectId, unit);
                 }
-                totalMethods += units.size();
+                totalMethods.addAndGet(units.size());
 
             } catch (IOException e) {
                 log.debug("波及重建: 跳过文件 {}", filePath);
             }
-        }
+        });
 
         // 更新索引 commit hash
         saveLastIndexedCommit(projectId, repoPath);
 
-        log.info("波及重建完成: projectId={}, reindexedMethods={}", projectId, totalMethods);
-        return totalMethods;
+        log.info("波及重建完成: projectId={}, reindexedMethods={}", projectId, totalMethods.get());
+        return totalMethods.get();
     }
 
     // ======================== 数据写入（MySQL + Redis + ripple） ========================

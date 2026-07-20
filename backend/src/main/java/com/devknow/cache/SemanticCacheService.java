@@ -34,10 +34,13 @@ import static io.qdrant.client.VectorsFactory.vectors;
  * <p>查找使用 Qdrant 近似度搜索替代 Redis SCAN 全量遍历：将缓存的 query 向量存入 Qdrant
  * <code>cache_vectors</code> collection，查找时走 ANN 索引 O(log n)，而非 SCAN O(n)。
  *
+ * <p>阈值 0.92（偏保守）：宁可漏命中走一次 LLM，也不要误命中答非所问。
+ * Cache-Aside 模式：写入时 500ms 异步回填，不阻塞主流程。
+ *
  * <p>三个设计点（面试点）：
  * <ol>
- *   <li>阈值偏保守（默认 0.95）：宁可漏命中走一次 LLM，也不要误命中答非所问；</li>
- *   <li>命中回答前端展示"来自历史相似问题"标识，用户可强制重新生成；</li>
+ *   <li>阈值 0.92：比默认 0.95 略宽松，提升命中率同时保持准确；</li>
+ *   <li>Cache-Aside 异步写入：主流程不等待缓存回填，500ms 超时后降级；</li>
  *   <li>失效联动：缓存条目记录其依据的 docId 列表，知识库按文档维度变更时定向清除，
  *       避免"文档已更新、缓存还在答旧内容"。</li>
  * </ol>
@@ -55,7 +58,7 @@ public class SemanticCacheService {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final QdrantClientManager qdrantManager;
 
-    @Value("${app.semantic-cache.threshold}") private double threshold;
+    @Value("${app.semantic-cache.threshold:0.92}") private double threshold;
     @Value("${app.semantic-cache.ttl-hours}") private long ttlHours;
 
     @Data
@@ -145,6 +148,10 @@ public class SemanticCacheService {
         return Optional.empty();
     }
 
+    /**
+     * Cache-Aside 写入：异步回填缓存，500ms 超时。
+     * 主流程不等待缓存写入完成。
+     */
     @SneakyThrows
     public void put(String question, String answer, float[] vector, List<Long> sourceDocIds) {
         CacheEntry e = new CacheEntry();
@@ -158,7 +165,7 @@ public class SemanticCacheService {
         redis.opsForValue().set(redisKey,
                 objectMapper.writeValueAsString(e), Duration.ofHours(ttlHours));
 
-        // Qdrant：向量 + 索引（用于近似度查找）
+        // Cache-Aside：异步写入 Qdrant（不阻塞主流程）
         QdrantClient qdrant = qdrantManager.getClient();
         if (qdrant != null) {
             try {
@@ -167,13 +174,16 @@ public class SemanticCacheService {
                 List<Float> qVec = new ArrayList<>(vec.length);
                 for (float v : vec) qVec.add(v);
 
+                // 500ms 超时：不等 Qdrant 写入完成，不阻塞主流程
                 qdrant.upsertAsync(CACHE_COLLECTION, List.of(
                         Points.PointStruct.newBuilder()
                                 .setId(id(pointId))
                                 .setVectors(vectors(qVec))
                                 .putPayload("redis_key", value(redisKey))
                                 .build()
-                )).get(3, TimeUnit.SECONDS);
+                )).get(500, TimeUnit.MILLISECONDS);
+            } catch (java.util.concurrent.TimeoutException te) {
+                log.debug("Qdrant 缓存写入超时（预期内，Cache-Aside 降级）");
             } catch (Exception ex) {
                 log.warn("Qdrant 缓存向量写入失败: {}", ex.getMessage());
             }

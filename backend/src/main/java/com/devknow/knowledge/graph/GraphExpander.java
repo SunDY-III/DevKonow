@@ -24,6 +24,9 @@ import java.util.*;
  *   weight(EXTENDS)    = 0.6
  *   weight(SEQUEL_TO)  = 0.5
  * </pre>
+ *
+ * <p>优化：批量 Neo4j 查询，将逐 docId 循环查询改为一次批量查询所有命中文档的关联，
+ * 减少数据库往返次数。
  */
 @Slf4j
 @Component
@@ -65,32 +68,31 @@ public class GraphExpander {
         }
         if (hitDocIds.isEmpty()) return hits;
 
-        // 2. 遍历命中文档，查 Neo4j 获取关联文档
+        // 2. 批量查询所有命中文档的关联文档（一次 Neo4j 查询，替代逐 docId 循环）
         //    构建 relatedDocId → {baseScore, bestType, minHops}
         Map<Long, RelatedInfo> relatedMap = new HashMap<>();
-        for (Long docId : hitDocIds) {
-            try {
-                List<GraphRelationResult> related = graphService.findRelated(docId, maxHops);
-                for (GraphRelationResult r : related) {
-                    if (hitDocIds.contains(r.getDocId())) continue;
+        try {
+            List<GraphRelationResult> allRelated = graphService.findRelatedBatch(
+                    new ArrayList<>(hitDocIds), maxHops);
+            for (GraphRelationResult r : allRelated) {
+                if (hitDocIds.contains(r.getDocId())) continue;
 
-                    double baseScore = hitScoreMap.getOrDefault(docId, 0.5);
-                    String bestType = extractBestType(r.getRelationType());
-                    int hops = r.getHops();
+                double baseScore = hitScoreMap.getOrDefault(r.getSourceDocId(), 0.5);
+                String bestType = extractBestType(r.getRelationType());
+                int hops = r.getHops();
 
-                    relatedMap.merge(r.getDocId(),
-                            new RelatedInfo(baseScore, bestType, hops),
-                            (old, cur) -> {
-                                // 取更短的跳数（关联更紧）
-                                if (cur.hops < old.hops) return cur;
-                                // 同跳数取更高的 baseScore
-                                if (cur.hops == old.hops && cur.baseScore > old.baseScore) return cur;
-                                return old;
-                            });
-                }
-            } catch (Exception e) {
-                log.warn("图谱扩展查询失败（docId={}）: {}", docId, e.getMessage());
+                relatedMap.merge(r.getDocId(),
+                        new RelatedInfo(baseScore, bestType, hops),
+                        (old, cur) -> {
+                            // 取更短的跳数（关联更紧）
+                            if (cur.hops < old.hops) return cur;
+                            // 同跳数取更高的 baseScore
+                            if (cur.hops == old.hops && cur.baseScore > old.baseScore) return cur;
+                            return old;
+                        });
             }
+        } catch (Exception e) {
+            log.warn("批量图谱扩展查询失败: {}", e.getMessage());
         }
         if (relatedMap.isEmpty()) return hits;
 

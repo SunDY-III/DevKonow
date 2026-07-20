@@ -60,3 +60,13 @@ export function switchCodeIndexMode(mode, projectDir) {
 export function subscribeCodeIndexProgress() {
   return new EventSource('/api/codeindex/mode/progress')
 }
+
+// ================== 护航学习 (Mentor) ==================
+
+export function getMentorPlan(projectId) {
+  return request(`/mentor/${projectId}/plan`, { method: 'POST' })
+}
+
+export function getMentorAchievements(projectId) {
+  return request(`/mentor/${projectId}/achievements`)
+}

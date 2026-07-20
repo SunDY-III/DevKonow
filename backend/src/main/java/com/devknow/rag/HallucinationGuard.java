@@ -22,6 +22,9 @@ import java.util.stream.Collectors;
  *   <li><b>逐字引用追溯</b> — LLM 为答案中每个关键论断找到源文档中的
  *       逐字原文片段并附上引用，确保每句话都可追溯到出处。</li>
  * </ol>
+ *
+ * <p>CRAG 高置信跳过：当检索置信度 >= 0.85 时，跳过第一关和第二关 LLM 调用，
+ * 直接使用检索结果，降低延迟和 Token 消耗。
  */
 @Slf4j
 @Component
@@ -32,6 +35,9 @@ public class HallucinationGuard {
 
     /** 主力模型：第三关（引用追溯）用 —— 需要精确文本匹配能力 */
     private final dev.langchain4j.model.chat.ChatLanguageModel deepModel;
+
+    /** 高置信阈值：超过此值时跳过第一关和第二关 LLM 调用 */
+    private static final double HIGH_CONFIDENCE_THRESHOLD = 0.85;
 
     private final ObjectMapper jsonMapper = new ObjectMapper();
 
@@ -299,28 +305,63 @@ public class HallucinationGuard {
         }
     }
 
-    // ==================== 统一入口 ====================
+    // ==================== 统一入口（含 CRAG 置信跳过） ====================
 
     /**
      * 全链路执行三个鉴定点。
      * 第一关在检索端调用，第二、三关在生成端调用。
      *
+     * <p>CRAG 优化：当置信度 >= HIGH_CONFIDENCE_THRESHOLD (0.85) 时，
+     * 跳过第一关（chunk 过滤），加速高置信场景。
+     *
      * @param question   用户问题
      * @param chunks     检索结果 chunk 列表
+     * @param confidence 检索置信度（来自 CRAG 评估器）
      * @return 经过第一关过滤后的 chunk 列表
      */
     public List<ScoredChunk> executeCheckpoint1(String question, List<ScoredChunk> chunks) {
+        return executeCheckpoint1(question, chunks, 0.0);
+    }
+
+    /**
+     * 含置信度参数的第一关。
+     *
+     * @param confidence 检索置信度，>= HIGH_CONFIDENCE_THRESHOLD 时跳过 LLM 过滤
+     */
+    public List<ScoredChunk> executeCheckpoint1(String question, List<ScoredChunk> chunks, double confidence) {
+        if (confidence >= HIGH_CONFIDENCE_THRESHOLD) {
+            log.info("[幻觉-第一关] CRAG 高置信跳过: confidence={:.4f} >= {}", confidence, HIGH_CONFIDENCE_THRESHOLD);
+            return chunks;
+        }
         return filterRelevantChunks(question, chunks);
     }
 
     /**
      * 执行第二、三关（在 LLM 生成答案后调用）。
      *
+     * <p>CRAG 优化：当置信度 >= HIGH_CONFIDENCE_THRESHOLD 时，
+     * 跳过第二关（事实验证），仅执行第三关引用追溯。
+     *
      * @param rawAnswer LLM 生成的原始答案
      * @param chunks    源文档 chunk 列表
      * @return 经过验证和引用追溯的最终答案
      */
     public String executeCheckpoint2And3(String rawAnswer, List<ScoredChunk> chunks) {
+        return executeCheckpoint2And3(rawAnswer, chunks, 0.0);
+    }
+
+    /**
+     * 含置信度参数的第二、三关。
+     *
+     * @param confidence 检索置信度，>= HIGH_CONFIDENCE_THRESHOLD 时跳过第二关
+     */
+    public String executeCheckpoint2And3(String rawAnswer, List<ScoredChunk> chunks, double confidence) {
+        if (confidence >= HIGH_CONFIDENCE_THRESHOLD) {
+            log.info("[幻觉-第二关] CRAG 高置信跳过: confidence={:.4f} >= {}", confidence, HIGH_CONFIDENCE_THRESHOLD);
+            // 跳过第二关，直接执行第三关引用追溯
+            return traceCitations(rawAnswer, chunks);
+        }
+
         // 第二关：事实验证
         FactCheckResult factCheck = verifyAnswer(rawAnswer, chunks);
 

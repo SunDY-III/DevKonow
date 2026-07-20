@@ -18,6 +18,8 @@ import java.util.stream.Collectors;
  * </ul>
  *
  * <p>参考论文：Corrective Retrieval Augmented Generation (Yan et al., 2024)
+ *
+ * <p>优化：复用外部传入的 queryVector，避免补搜时重复 embedding。
  */
 @Slf4j
 @Component
@@ -30,15 +32,24 @@ public class CorrectiveEvaluator {
     private static final double THRESHOLD_LOW = 0.3;
 
     /**
-     * 评估检索结果并执行纠错策略。
-     *
-     * @param chunks    原始检索结果
-     * @param question  用户问题
-     * @param retryFn   补搜回调（输入放宽后的搜索参数，返回补充结果）
-     * @return 评估后的最终结果
+     * 评估检索结果并执行纠错策略（无 queryVector 版本）。
      */
     public EvaluationResult evaluate(List<ScoredChunk> chunks, String question,
                                      RetryFunction retryFn) {
+        return evaluate(chunks, question, retryFn, null);
+    }
+
+    /**
+     * 评估检索结果并执行纠错策略（复用 queryVector 版本）。
+     *
+     * @param chunks      原始检索结果
+     * @param question    用户问题
+     * @param retryFn     补搜回调（输入放宽后的搜索参数，返回补充结果）
+     * @param queryVector 外部传入的 queryVector（避免补搜时重复 embedding）
+     * @return 评估后的最终结果
+     */
+    public EvaluationResult evaluate(List<ScoredChunk> chunks, String question,
+                                     RetryFunction retryFn, float[] queryVector) {
         if (chunks == null || chunks.isEmpty()) {
             return new EvaluationResult(List.of(), EvaluationVerdict.LOW_CONFIDENCE, "检索结果为空");
         }
@@ -62,8 +73,8 @@ public class CorrectiveEvaluator {
 
         double confidence = Math.min(1.0, avgTop3 + coverageBonus);
 
-        log.info("CRAG: q={}, topScore={:.4f}, avgTop3={:.4f}, sources={}, confidence={:.4f}",
-                truncate(question, 40), topScore, avgTop3, sources, confidence);
+        log.info("CRAG: q={}, topScore={:.4f}, avgTop3={:.4f}, sources={}, confidence={:.4f}, hasQueryVector={}",
+                truncate(question, 40), topScore, avgTop3, sources, confidence, queryVector != null);
 
         if (confidence >= THRESHOLD_HIGH) {
             // ✅ 可信 → 直接使用

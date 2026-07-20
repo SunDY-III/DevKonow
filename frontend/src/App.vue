@@ -12,6 +12,14 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
             搜索
           </router-link>
+          <router-link to="/discover" class="nav-link" active-class="active">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><circle cx="12" cy="8" r="1"/></svg>
+            发现
+          </router-link>
+          <router-link to="/learn" class="nav-link" active-class="active">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+            研读
+          </router-link>
           <router-link to="/projects" class="nav-link" active-class="active">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
             项目
@@ -23,6 +31,13 @@
         </nav>
       </div>
       <div class="topbar-right">
+        <!-- 项目选择器 -->
+        <select v-if="projectStore.projects.length > 0" v-model="selectedProjectId" class="project-selector" @change="onProjectChange">
+          <option value="">所有项目</option>
+          <option v-for="p in projectStore.projects" :key="p.id" :value="p.id">
+            {{ p.displayName || p.name }}
+          </option>
+        </select>
         <div class="mode-selector" @click="showModeMenu = !showModeMenu">
           <span class="mode-indicator" :class="currentMode"></span>
           <span class="mode-name">{{ modeLabel }}</span>
@@ -59,13 +74,19 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { getCodeIndexMode, getProjects } from './api/index.js'
+import { useProjectStore } from './stores/useProjectStore.js'
 import ScipModal from './components/ScipModal.vue'
+
+const router = useRouter()
+const projectStore = useProjectStore()
 
 const currentMode = ref('tree-sitter')
 const showModeMenu = ref(false)
 const showScipModal = ref(false)
 const selectedProjectDir = ref('')
+const selectedProjectId = ref('')
 
 const modeLabel = computed(() => {
   if (currentMode.value === 'scip') return 'SCIP'
@@ -77,8 +98,19 @@ onMounted(async () => {
     const resp = await getCodeIndexMode()
     currentMode.value = resp.mode
   } catch {}
+  try {
+    await projectStore.ensureLoaded()
+  } catch {}
   document.addEventListener('click', () => { showModeMenu.value = false })
 })
+
+function onProjectChange() {
+  if (!selectedProjectId.value) {
+    router.push('/chat')
+    return
+  }
+  router.push(`/chat/${selectedProjectId.value}`)
+}
 
 async function switchToTreeSitter() {
   showModeMenu.value = false
@@ -194,11 +226,27 @@ function onScipModalClose() {
   color: #c15f3c;
 }
 
-/* ── Mode Selector ── */
+/* ── Topbar Right ── */
 .topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   position: relative;
 }
 
+.project-selector {
+  padding: 5px 10px;
+  border: 1px solid #e8e3d8;
+  border-radius: 6px;
+  font-size: 12px;
+  background: #fff;
+  color: #5a5548;
+  cursor: pointer;
+  max-width: 160px;
+}
+.project-selector:focus { border-color: #c15f3c; outline: none; }
+
+/* ── Mode Selector ── */
 .mode-selector {
   display: flex;
   align-items: center;

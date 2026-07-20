@@ -1,0 +1,143 @@
+{
+  "summary": "优化建议总计 22 项，覆盖 Phase 2+3 计划的全链路。核心主题：将 RagService 拆分并提取公共检索接口供 Phase 2/3 复用，避免新模块重复造轮子；Phase 2 分析器间共享一次解析结果而非各自独立调用 LLM；ChatService 硬编码路由改为策略模式以可扩展接入 learn 路由；利用已存在的 fastChatLanguageModel 替代全量模型做 HyDE 和路由分类以降低 30-50% 推理成本；向量搜索与关键词搜索改为并行执行以降低检索延迟；Phase 2 架构分析与代码亮点提取采用批处理 prompt 合并多次 LLM 调用。同时将僵硬耦合的模块拆分为插件式管道架构，为 Phase 3 护航引擎预留清晰的扩展点。",
+  "optimizations": [
+    {
+      "target": "ChatService.classifyQuestion()",
+      "issue": "每次聊天查询都调用全量 chatModel 做路由分类（code/doc/both/unknown），此任务本质是关键词/模式匹配，不必每次动用 LLM。",
+      "suggestion": "改为两级：前置关键词匹配器（正则匹配方法名、调用链、设计等关键词）秒级判定，不匹配时 fallback 到 fastChatLanguageModel。定义关键词表如 codeKeywords=[方法,函数,调用,class,function,method,impl]，docKeywords=[设计,文档,架构,协议,接口,为什么]。结果缓存 5 分钟防重复。",
+      "impact": "cost"
+    },
+    {
+      "target": "HydeGenerator.generateHypothesis()",
+      "issue": "HyDE 使用全量主力 chatModel（如 gpt-4o）生成假设文档，但任务本质是语义改写——用轻量模型完全胜任。",
+      "suggestion": "注入 fastChatLanguageModel（已在 LlmConfig 中定义用于幻觉检查的轻量模型）替代 chatModel。HyDE 输出上限仅几百 token，轻量模型可节省 60-80% 推理成本，对检索精度无实质影响。",
+      "impact": "cost"
+    },
+    {
+      "target": "HallucinationGuard.executeCheckpoint1()",
+      "issue": "CRAG 评估已给出 HIGH_CONFIDENCE 时，第一关再做 LLM 逐条 chunk 判断属于冗余判定。",
+      "suggestion": "在入口检查 confidence：当 CRAG 置信度 >= 0.85（已有 calculateConfidence 结果）且 chunk <= 5 时跳过 LLM 过滤。仅在 low/medium 或 chunk > 5 时触发 LLM。预计减少 40-50% 第一关调用。",
+      "impact": "cost"
+    },
+    {
+      "target": "SemanticCacheService threshold",
+      "issue": "默认阈值 0.95 过于保守，大量语义相似的问题无法命中缓存，每次都走完整 RAG 链路。",
+      "suggestion": "默认阈值调整至 0.92，前端对命中缓存展示来自历史相似问题标识并附强制重新生成按钮。score 在 [0.88, 0.92) 区间可从缓存返回但加 X-Cache-Probability 低置信提示。预期提升 20-35% 缓存命中率。",
+      "impact": "cost"
+    },
+    {
+      "target": "Phase 2 新建文件: ArchitectureAnalyzer + HighlightsExtractor + PatternIdentifier",
+      "issue": "三个分析器各自独立读取源码文件、各自调用 LLM 分析相同文件。同一段代码被重复读取、重复向量化、重复 LLM 分析，LLM 调用数 = 文件数 x 3。",
+      "suggestion": "定义 ProjectAnalysisContext 共享对象，在 ProjectReaderService 中一次性完成文件扫描和 AST 解析，将结果注入三个分析器共用的上下文。同时将三个分析任务的 prompt 合并为单次多任务 LLM 调用：让 LLM 一次性输出架构评估+亮点+设计模式，结构化为 JSON 后分发。LLM 调用从 O(3n) 降为 O(n+1)。",
+      "impact": "cost"
+    },
+    {
+      "target": "MemoryService.compress()",
+      "issue": "对话历史摘要压缩使用了全量 chatModel，但压缩任务只是摘要提取，使用轻量模型即可。",
+      "suggestion": "使用 fastChatLanguageModel 替代 chatModel 做摘要压缩。摘要压缩触发频繁（窗口超过 summaryTrigger 时），此改动可显著降低 Token 消耗。",
+      "impact": "cost"
+    },
+    {
+      "target": "Phase 3 ScaffoldGenerator + DevOpsConfigGenerator",
+      "issue": "如果用 LLM 从零生成代码/配置文件，对每个请求都产生大量输出 token，成本极高且质量不稳定。",
+      "suggestion": "建立模板库体系：按 tech-stack 索引的预置模板仓库（zip/tar）。用户选择 Spring Boot 3 + MySQL 时直接解压对应模板。LLM 仅用于两个有限场景：(1) 根据用户描述做模板选择推荐（分类任务，可用 fastModel）；(2) 在模板基础上做变量替换的微调。预计减少 90% 脚手架 LLM token 消耗。",
+      "impact": "cost"
+    },
+    {
+      "target": "RagService.levelAwareRetrieve() — 向量搜索与关键词搜索串行",
+      "issue": "向量搜索和关键词搜索在 levelAwareRetrieve 中串行执行，两者完全独立可并行。",
+      "suggestion": "使用 CompletableFuture 并行执行两个搜索路径：CompletableFuture.supplyAsync(() -> vectorStoreService.searchByLevels(...)) 和 CompletableFuture.supplyAsync(() -> chunkRepository.keywordSearchByLevel(...))，thenCombine 后执行 RRF 融合。对典型请求可降低 200-500ms 延迟。",
+      "impact": "performance"
+    },
+    {
+      "target": "GraphExpander.expand() — N+1 Neo4j 查询",
+      "issue": "GraphExpander 在循环中逐 docId 调用 graphService.findRelated()，对每个命中文档发一次 Neo4j 查询。",
+      "suggestion": "添加批量接口 findRelatedBatch(List<Long> docIds, int maxHops)，使用 Neo4j IN 子句一次查询所有命中文档的关联关系。同时 RagService.buildGraphRelationMap 中存在同样的 N+1 问题，一并修改。",
+      "impact": "performance"
+    },
+    {
+      "target": "Reranker.precomputeCallGraph() — N+1 数据库查询",
+      "issue": "Reranker 中对每个代码术语循环调用 codeUnitRepo.findCallersByMethodName()，潜在数十次数据库查询。",
+      "suggestion": "添加批量查询方法 findByMethodNames(projectId, List<String> methodNames)，用 SQL IN 子句一次查回全部调用方。或利用 Redis ripple 缓存前缀使用 MGET 批量获取。",
+      "impact": "performance"
+    },
+    {
+      "target": "CorrectiveEvaluator 补搜回调 — 重复向量化",
+      "issue": "补搜 retry 回调中重新调用 embed(userId, question) 计算查询向量，但该向量在 levelAwareRetrieve 开头已经计算。",
+      "suggestion": "将 queryVector 通过闭包捕获传递给 retry 回调，直接复用已有向量。避免每次补搜都多一次 embedding 调用。",
+      "impact": "performance"
+    },
+    {
+      "target": "CodeIndexService.indexProject() — 文件处理串行",
+      "issue": "全量索引对数千个文件逐一串行 parse + save，未利用多核 CPU 优势。尤其是 embedding 调用（网络 I/O）和 DB 写入（I/O）可并发。",
+      "suggestion": "使用虚拟线程（Java 21）或 ForkJoinPool 并行处理文件批次（每批 20-50 个文件），并发 parse + embedding + batch insert DB。注意 DB 连接池和 Qdrant 写入限流。对大型项目预计提速 3-5 倍。",
+      "impact": "performance"
+    },
+    {
+      "target": "SemanticCacheService.lookup() — Qdrant 超时阻塞主链路",
+      "issue": "Qdrant ANN 搜索设置 3 秒阻塞超时，且失败后降级到 Redis SCAN O(n)，总延迟可能超 5 秒。",
+      "suggestion": "改为 cache-aside 模式：lookup 设置短超时（500ms），超时或未命中时立即返回空让主流程继续，在 LLM onComplete 中异步写回缓存。缓存查找不增加延迟敏感路径的 P99。",
+      "impact": "performance"
+    },
+    {
+      "target": "Phase 2 ProjectReaderService — 锁粒度与状态隔离",
+      "issue": "只读导入模式与全量索引共享同一 Redis 锁和状态 key（index:status:projectId），粒度过粗，只读操作会阻塞正常的索引操作。",
+      "suggestion": "只读导入使用独立 Redis 状态 key（如 reader:status:projectId），与 index:status 隔离。只读模式不获取重索引锁（tryReindexLock）。利用 IndexCommit hash 判断代码有无变更，无变更时从缓存返回架构分析结果。",
+      "impact": "performance"
+    },
+    {
+      "target": "RagService — 上帝类架构",
+      "issue": "RagService 注入了 15+ 个依赖，levelAwareRetrieve 一个方法处理了检索全链路。单一职责严重违反，测试困难，Phase 2/3 新模块难以复用部分环节。",
+      "suggestion": "拆分为三个服务：(1) RetrievalOrchestrator — 编排搜索流程；(2) FusionService — RRF+MMR+Re-rank+CrossEncoder 融合管道；(3) QualityGateService — CRAG+幻觉三关。Phase 2 LearningPathService 和 Phase 3 MentorService 只需注入 RetrievalOrchestrator。",
+      "impact": "coupling"
+    },
+    {
+      "target": "LlmStreamingService — 依赖 RagService 仅为了 buildContext()",
+      "issue": "LlmStreamingService 注入整个 RagService 只调用了 buildContext(chunks) 这个简单的 StringBuilder 拼接，造成接口污染和循环依赖风险。",
+      "suggestion": "将 buildContext(List<ScoredChunk>) 提取为独立的静态工具方法放入 ContextBuilder 类。同时 HallucinationGuard 中构建 sourceText 的逻辑也可统一复用此工具。",
+      "impact": "coupling"
+    },
+    {
+      "target": "ChatService — 硬编码 switch-case 路由",
+      "issue": "路由使用 switch(route) 硬编码，Phase 2 接入 learn 路由需修改此方法，破坏开放封闭原则。",
+      "suggestion": "重构为策略模式：定义 ChatRouteHandler 接口，每个路由实现为一个 Spring Bean（CodeRouteHandler, DocRouteHandler, BothRouteHandler, AgentRouteHandler, LearnRouteHandler）。ChatService 注入 List<ChatRouteHandler> 按 route 名称查找委托。新增路由只需新增 Bean。",
+      "impact": "extensibility"
+    },
+    {
+      "target": "RagService.levelAwareRetrieve() — 僵化的 10 步管道",
+      "issue": "10 步检索管道全部写在一个方法中，步骤固定不可变。无法灵活插入/移除步骤。",
+      "suggestion": "提取为管道模式：定义 RetrievalPipelineStep 接口，每个步骤是一个 Bean（VectorSearchStep, KeywordSearchStep, RrfFusionStep, MmrSelectionStep, ReRankStep, CrossEncoderStep, CragEvaluationStep, HallucinationCheckStep），通过 List 注入并排序执行。步骤间通过 PipelineContext 共享数据。",
+      "impact": "extensibility"
+    },
+    {
+      "target": "Phase 2 新建文件: ArchitectureAnalyzer / HighlightsExtractor / PatternIdentifier 接口设计",
+      "issue": "三个新类无统一接口，Controller 直接调具体类。Phase 3 新增分析器需修改 Controller。",
+      "suggestion": "定义 CodeAnalyzer 接口：interface CodeAnalyzer { String getType(); AnalysisResult analyze(ProjectAnalysisContext ctx); }。三个分析器分别实现该接口。LearnController 通过 List<CodeAnalyzer> 注入自动发现所有分析器。新增分析器只需新增 Bean 实现接口。",
+      "impact": "extensibility"
+    },
+    {
+      "target": "Phase 2+3 prompt 硬编码问题",
+      "issue": "Phase 2 教学提示词和 Phase 3 护航提示词可能硬编码在 Service 中，现有 LlmStreamingService 的 system prompt 也已硬编码。",
+      "suggestion": "将 LLM prompt 外部化到数据库表（prompt_template）或配置文件（prompts/ 目录下按用途分类）。开发管理后台可热更新 prompt 无需重启。优先为 Phase 2 教学 prompt、Phase 3 护航 prompt、ChatService system prompt 建立模板表。",
+      "impact": "extensibility"
+    },
+    {
+      "target": "MmrSelector 与 QueryExpander 算法效率",
+      "issue": "(1) MmrSelector 的 computeGraphAlpha 反向查找需要双向 Map，但现有结构只存单向导致多一次查找；(2) QueryExpander 中每个 token 遍历整个 synonymMap 做反向查找，时间复杂度 O(n*m)。",
+      "suggestion": "(1) MmrSelector 的 graphRelatedDocIds 在构建时补全反向映射（双向填充）；(2) QueryExpander 在 @PostConstruct 中构建反向索引 Map，反向查找从 O(m) 降为 O(1)。",
+      "impact": "algorithm"
+    },
+    {
+      "target": "Phase 2 LearningPathService — 与 LevelClassifier 功能重复",
+      "issue": "LevelClassifier（现有组件）已按 L1-L5 层级分类用户问题的知识深度。Phase 2 学习路径服务若独立实现另一套难度分级，逻辑重复且与 RAG 管道不联动。",
+      "suggestion": "LearningPathService 复用 LevelClassifier 的层级结果作为学习路径难度推荐依据。LevelClassifier 已整合 UserKnowledgeRole（用户角色调整），可自然映射到学习路径的阶段划分，无需重复实现分级逻辑。",
+      "impact": "algorithm"
+    },
+    {
+      "target": "Phase 2 CodeTools.explainMethod — Agent 工具的定位",
+      "issue": "新增 explainMethod 工具如果也走 CodeReviewAgentService 的 AiServices Agent 流程（带 tool 调用循环），每次解释方法都要走多轮 LLM 对话，开销大。",
+      "suggestion": "explainMethod 应直接调用 LlmStreamingService 的流式接口（复用现有的 teaching prompt 模板），而非走 Agent 工具调用循环。Agent 只应在需要多步文件扫描的场景下使用。区分面向用户的方法解释（流式输出，低延迟）和 Agent 深度分析（多轮扫描，高延迟）。",
+      "impact": "cost"
+    }
+  ]
+}

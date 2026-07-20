@@ -28,6 +28,13 @@
       </div>
     </div>
 
+    <!-- 路由/阶段标签 -->
+    <div v-if="currentRoute" class="route-indicator">
+      <span class="route-badge">{{ currentRoute }}</span>
+      <span v-if="currentStep" class="step-badge">步骤 {{ currentStep }}</span>
+      <span v-if="fromCache" class="cache-badge">来自缓存</span>
+    </div>
+
     <!-- 消息列表 -->
     <div class="messages-area" ref="messageList" v-if="messages.length > 0">
       <div v-for="(msg, i) in messages" :key="i" class="msg-group">
@@ -84,27 +91,39 @@
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
-import { getProjects } from '../api/index.js'
+import { useProjectStore } from '../stores/useProjectStore.js'
 
 const route = useRoute()
+const projectStore = useProjectStore()
+
 const messages = ref([])
 const question = ref('')
 const loading = ref(false)
 const currentProjectId = ref(route.params.projectId || '')
 const currentProjectName = ref('')
+const currentRoute = ref('')
+const currentStep = ref('')
+const fromCache = ref(false)
 const messageList = ref(null)
 const searchInput = ref(null)
 
 let es = null
 
 onMounted(async () => {
-  try {
-    const projects = await getProjects()
-    if (projects && projects.length > 0) {
-      currentProjectName.value = projects[0].name || projects[0].repoName || ''
-    }
-  } catch {}
-  nextTick(() => searchInput.value?.focus())
+  await projectStore.ensureLoaded()
+  if (currentProjectId.value) {
+    const p = projectStore.projects.find(pr => String(pr.id) === String(currentProjectId.value))
+    if (p) currentProjectName.value = p.displayName || p.name || ''
+  } else if (projectStore.projects.length > 0) {
+    currentProjectName.value = projectStore.projects[0].name || ''
+  }
+  // 从 URL query 中获取初始问题
+  if (route.query.question) {
+    question.value = route.query.question
+    nextTick(() => send())
+  } else {
+    nextTick(() => searchInput.value?.focus())
+  }
 })
 
 async function send() {
@@ -113,11 +132,13 @@ async function send() {
   question.value = ''
   messages.value.push({ role: 'user', content: q })
   loading.value = true
+  currentRoute.value = ''
+  currentStep.value = ''
+  fromCache.value = false
 
   const params = new URLSearchParams({
     question: q,
-    conversationId: Date.now().toString(),
-    token: 'dev'
+    conversationId: Date.now().toString()
   })
   if (currentProjectId.value) params.set('projectId', currentProjectId.value)
 
@@ -130,7 +151,7 @@ async function send() {
     if (last?.role === 'assistant') {
       last.content = answer
     } else {
-      messages.value.push({ role: 'assistant', content: answer })
+      messages.value.push({ role: 'assistant', content: answer, sources: [] })
     }
     scrollToBottom()
   })
@@ -141,6 +162,26 @@ async function send() {
       const last = messages.value[messages.value.length - 1]
       if (last?.role === 'assistant') last.sources = sources
     } catch {}
+  })
+
+  // 路由事件
+  es.addEventListener('route', (e) => {
+    currentRoute.value = e.data
+  })
+
+  // 阶段事件
+  es.addEventListener('phase', (e) => {
+    currentRoute.value = e.data
+  })
+
+  // 步骤进度（Agent 模式）
+  es.addEventListener('step', (e) => {
+    currentStep.value = e.data
+  })
+
+  // 缓存命中
+  es.addEventListener('cache', (e) => {
+    fromCache.value = e.data === 'true'
   })
 
   es.addEventListener('done', () => { es.close(); loading.value = false; scrollToBottom() })
@@ -163,7 +204,6 @@ function renderContent(text) {
     .replace(/\[文件:\s*([^\]]+)\]/g, '<span class="code-ref">📄 $1</span>')
     .replace(/\[片段(\d+)\]/g, '<span class="code-ref">📎 [$1]</span>')
 }
-
 
 onUnmounted(() => { if (es) es.close() })
 </script>
@@ -268,6 +308,38 @@ onUnmounted(() => { if (es) es.close() })
   font-size: 12px;
   color: #8a857a;
 }
+
+/* ── Route Indicator ── */
+.route-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 24px;
+  background: #f8f6f0;
+  border-bottom: 1px solid #e8e3d8;
+  font-size: 11px;
+}
+.route-badge {
+  padding: 2px 8px;
+  background: #f5ede8;
+  color: #c15f3c;
+  border-radius: 8px;
+  font-weight: 500;
+}
+.step-badge {
+  padding: 2px 8px;
+  background: #e8f5e9;
+  color: #2e7d32;
+  border-radius: 8px;
+}
+.cache-badge {
+  padding: 2px 8px;
+  background: #e3f2fd;
+  color: #1565c0;
+  border-radius: 8px;
+  animation: fadeIn 0.3s;
+}
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
 /* ── Messages ── */
 .messages-area {

@@ -1,4 +1,35 @@
 /* ── Coral Warm Theme — Claude-inspired · Sourcegraph-like ── */
+
+/* ==================== CSS Design Tokens ==================== */
+:root {
+  /* 颜色 */
+  --accent: #c15f3c;
+  --accent-hover: #d47a4a;
+  --accent-bg: #f5ede8;
+  --bg: #faf9f5;
+  --card-bg: #fff;
+  --border-color: #e8e3d8;
+  --border-hover: #d4cfc2;
+  --text-primary: #2d2a24;
+  --text-secondary: #5a5548;
+  --text-muted: #8a857a;
+  --text-disabled: #c9c3b5;
+  --code-bg: #f5f0ea;
+  --success: #57ab5a;
+  --error: #d9534f;
+
+  /* 圆角 */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+
+  /* 阴影 */
+  --shadow-sm: 0 1px 4px rgba(0,0,0,0.04);
+  --shadow-md: 0 2px 12px rgba(0,0,0,0.06);
+  --shadow-lg: 0 8px 30px rgba(0,0,0,0.1);
+}
+
 *,
 *::before,
 *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -8,8 +39,8 @@ html, body { height: 100%; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Microsoft YaHei", "Noto Sans", sans-serif;
-  background: #faf9f5;
-  color: #2d2a24;
+  background: var(--bg);
+  color: var(--text-primary);
   font-size: 14px;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
@@ -19,11 +50,11 @@ body {
 #app { height: 100%; }
 
 a {
-  color: #c15f3c;
+  color: var(--accent);
   text-decoration: none;
   transition: color 0.15s;
 }
-a:hover { color: #d47a4a; }
+a:hover { color: var(--accent-hover); }
 
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -37,11 +68,93 @@ a:hover { color: #d47a4a; }
 /* ── Selection ── */
 ::selection {
   background: #c15f3c44;
-  color: #2d2a24;
+  color: var(--text-primary);
 }
 
 /* ── Utility ── */
-.text-muted { color: #8a857a; }
-.text-coral { color: #c15f3c; }
+.text-muted { color: var(--text-muted); }
+.text-coral { color: var(--accent); }
 .text-sm { font-size: 12px; }
 .text-xs { font-size: 11px; }
+
+/* ── 全局组件类 ── */
+
+/* 卡片基础 */
+.card-base {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  transition: box-shadow 0.2s;
+}
+.card-base:hover {
+  box-shadow: var(--shadow-md);
+}
+
+/* 标签 */
+.topic-tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: #f0ece4;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: default;
+}
+
+/* 按钮基础 */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.12s;
+  border: none;
+}
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+}
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-secondary {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+}
+.btn-secondary:hover { border-color: var(--border-hover); background: #f8f6f0; }
+
+/* 代码块 */
+.code-block {
+  background: var(--code-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  overflow-x: auto;
+  font-size: 13px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+/* 内联代码 */
+.inline-code {
+  background: var(--code-bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+/* 输入框 */
+.input-field {
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  background: var(--card-bg);
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color 0.12s;
+}
+.input-field:focus { border-color: var(--accent); }
+.input-field::placeholder { color: var(--text-disabled); }

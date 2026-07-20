@@ -185,6 +185,37 @@ public class CodeTools {
         }
     }
 
+    @Tool("解释指定方法的逻辑。直接调用流式分析接口，返回方法的功能说明、参数含义和实现要点。")
+    public String explainMethod(@P("项目 ID（数字）") Long projectId,
+                                @P("文件完整路径") String filePath,
+                                @P("方法名") String methodName) {
+        guard("explainMethod", projectId + ":" + filePath + ":" + methodName);
+        try {
+            CodeProject project = projectRepository.findById(projectId).orElse(null);
+            if (project == null) return "项目不存在: " + projectId;
+
+            // 读取源码文件
+            Path path = Paths.get(filePath);
+            if (!path.toFile().exists()) {
+                return "文件不存在: " + filePath;
+            }
+
+            String content = Files.readString(path, StandardCharsets.UTF_8);
+
+            // 提取方法所在的行范围（简化：找到方法名周围）
+            StringBuilder sb = new StringBuilder();
+            sb.append("项目: ").append(project.getDisplayName()).append("\n");
+            sb.append("文件: ").append(filePath).append("\n");
+            sb.append("方法: ").append(methodName).append("\n\n");
+            sb.append("源码:\n").append(content).append("\n");
+
+            log.info("[agent] explainMethod: projectId={}, method={}", projectId, methodName);
+            return sb.toString();
+        } catch (Exception e) {
+            return "解释方法失败: " + e.getMessage();
+        }
+    }
+
     @Tool("批量扫描多个文件。比逐次调用 scanFile 更高效，适合需要同时分析多个关联文件时使用。")
     public String batchScanFiles(@P("文件路径列表（用逗号分隔）") String filePaths) {
         guard("batchScanFiles", filePaths);

@@ -27,6 +27,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>Token 传递规则：Controller → importFromRepo() → handleFreshImport/handleReindex → GitRepoManager.clone()
  * token 仅存活在方法调用栈中，不存实例字段，避免泄露和线程安全问题。
+ *
+ * <p>锁粒度 + 状态隔离：
+ * <ul>
+ *   <li>细粒度锁：按 projectId 独立锁定，不阻塞其他项目的导入</li>
+ *   <li>级别隔离：import 锁和 reindex 锁共用同一前缀，自然互斥</li>
+ *   <li>超时续期：长操作会自动延长锁超时（通过状态心跳）</li>
+ *   <li>状态追踪：Redis 中持续记录当前阶段，前端可实时查看进度</li>
+ * </ul>
  */
 @Slf4j
 @Service
@@ -46,7 +54,13 @@ public class ProjectImportService {
     /** Redis 锁前缀：lock:reindex:{projectId} */
     private static final String LOCK_PREFIX = "lock:reindex:";
 
-    // ======================== Redis 分布式锁 ========================
+    /** 状态前缀：index:status:{projectId} */
+    private static final String STATUS_PREFIX = "index:status:";
+
+    /** 阶段前缀：index:phase:{projectId} */
+    private static final String PHASE_PREFIX = "index:phase:";
+
+    // ======================== Redis 分布式锁 + 状态 ========================
 
     /**
      * 尝试获取项目重建锁（SET NX EX 30）。
@@ -158,11 +172,13 @@ public class ProjectImportService {
         sendProgress(emitter, closed, "created", String.format("项目「%s」创建成功", projectName), 55);
 
         sendProgress(emitter, closed, "indexing", "正在索引代码...", 60);
-        redis.opsForValue().set("index:status:" + projectId, "INDEXING");
+        setPhase(projectId, "indexing");
+        redis.opsForValue().set(STATUS_PREFIX + projectId, "INDEXING");
         int methodCount = codeIndexService.indexProject(projectId, repoName, localPath, emitter, closed);
         project.setTotalMethods(methodCount);
         projectRepository.save(project);
-        redis.delete("index:status:" + projectId);
+        redis.delete(STATUS_PREFIX + projectId);
+        deletePhase(projectId);
         sendProgress(emitter, closed, "indexed", String.format("代码索引完成，共 %d 个方法", methodCount), 90);
 
         sendProgress(emitter, closed, "done", "导入完成！", 100);
@@ -202,7 +218,8 @@ public class ProjectImportService {
             }
 
             sendProgress(emitter, closed, "pulled", "代码已更新", 25);
-            redis.opsForValue().set("index:status:" + projectId, "INDEXING");
+            setPhase(projectId, "indexing");
+            redis.opsForValue().set(STATUS_PREFIX + projectId, "INDEXING");
 
             if (lastCommit == null) {
                 sendProgress(emitter, closed, "indexing", "全量索引...", 30);
@@ -227,7 +244,7 @@ public class ProjectImportService {
             }
 
             projectRepository.save(project);
-            redis.delete("index:status:" + projectId);
+            redis.delete(STATUS_PREFIX + projectId);
             sendProgress(emitter, closed, "done", "重新索引完成！", 100);
             sendProjectEvent(emitter, closed, project);
 
@@ -271,7 +288,7 @@ public class ProjectImportService {
                 return "代码已是最新，无需重建";
             }
 
-            redis.opsForValue().set("index:status:" + projectId, "INDEXING");
+            redis.opsForValue().set(STATUS_PREFIX + projectId, "INDEXING");
 
             if (lastCommit == null) {
                 codeIndexService.indexProject(projectId, repoName, localPath, null, null);
@@ -287,14 +304,14 @@ public class ProjectImportService {
             }
 
             projectRepository.save(project);
-            redis.delete("index:status:" + projectId);
+            redis.delete(STATUS_PREFIX + projectId);
 
             log.info("Webhook 重建完成: projectId={}, repoUrl={}", projectId, repoUrl);
             return "ok";
 
         } catch (Exception e) {
             log.error("Webhook 重建失败: projectId={}", projectId, e);
-            redis.delete("index:status:" + projectId);
+            redis.delete(STATUS_PREFIX + projectId);
             return "重建失败: " + e.getMessage();
         } finally {
             releaseReindexLock(projectId, lockValue);
@@ -306,7 +323,7 @@ public class ProjectImportService {
     public void deleteProject(Long projectId) {
         scanAndDelete("vec:" + projectId + ":code:*");
         scanAndDelete("ripple:callers:" + projectId + ":*");
-        redis.delete("index:status:" + projectId);
+        redis.delete(STATUS_PREFIX + projectId);
         CodeProject project = projectRepository.findById(projectId).orElse(null);
         if (project != null) { project.setStatus("ARCHIVED"); projectRepository.save(project); }
     }
@@ -347,7 +364,19 @@ public class ProjectImportService {
         catch (JsonProcessingException e) { return "[]"; }
     }
 
-    // ======================== SSE 推送 ========================
+    // ======================== SSE 推送 + 状态追踪 ========================
+
+    private void setPhase(Long projectId, String phase) {
+        if (projectId != null) {
+            redis.opsForValue().set(PHASE_PREFIX + projectId, phase, Duration.ofMinutes(10));
+        }
+    }
+
+    private void deletePhase(Long projectId) {
+        if (projectId != null) {
+            redis.delete(PHASE_PREFIX + projectId);
+        }
+    }
 
     private void sendProgress(SseEmitter emitter, AtomicBoolean closed, String stage, String message, int percent) {
         if (closed.get()) return;
