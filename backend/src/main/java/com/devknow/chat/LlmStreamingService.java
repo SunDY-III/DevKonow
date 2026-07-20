@@ -3,6 +3,7 @@ package com.devknow.chat;
 import com.devknow.cache.SemanticCacheService;
 import com.devknow.governance.SensitiveWordFilter;
 import com.devknow.governance.TokenAuditService;
+import com.devknow.rag.HallucinationGuard;
 import com.devknow.rag.RagResult;
 import com.devknow.rag.RagService;
 import com.devknow.vector.ScoredChunk;
@@ -39,6 +40,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class LlmStreamingService {
 
     private final RagService ragService;
+    private final HallucinationGuard hallucinationGuard;
     private final MemoryService memoryService;
     private final StreamingChatLanguageModel streamingModel;
     private final SensitiveWordFilter sensitiveWordFilter;
@@ -106,10 +108,22 @@ public class LlmStreamingService {
                                     response.tokenUsage().inputTokenCount(),
                                     response.tokenUsage().outputTokenCount());
                         }
+
+                        // === 幻觉第二关 + 第三关：事实验证 + 引用追溯 ===
+                        List<ScoredChunk> sourceChunks = rag.getChunks();
+                        String hallucinationChecked = hallucinationGuard.executeCheckpoint2And3(safeAnswer, sourceChunks);
+
+                        // 如果验证后文本有变更，推送 corrected 事件供前端更新
+                        if (!hallucinationChecked.equals(safeAnswer)) {
+                            send(emitter, closed, "corrected", hallucinationChecked);
+                            log.info("幻觉检查修正了回答: 原长度={}, 修正后长度={}",
+                                    safeAnswer.length(), hallucinationChecked.length());
+                        }
+
                         // 记忆落库 + 语义缓存回填（记录来源 docId 供联动失效）
-                        memoryService.append(conversationId, userId, userMessage, AiMessage.from(safeAnswer));
-                        List<Long> docIds = rag.getChunks().stream().map(ScoredChunk::getDocId).distinct().toList();
-                        semanticCacheService.put(question, safeAnswer, queryVector, docIds);
+                        memoryService.append(conversationId, userId, userMessage, AiMessage.from(hallucinationChecked));
+                        List<Long> docIds = sourceChunks.stream().map(ScoredChunk::getDocId).distinct().toList();
+                        semanticCacheService.put(question, hallucinationChecked, queryVector, docIds);
 
                         send(emitter, closed, "done", "");
                     } finally {

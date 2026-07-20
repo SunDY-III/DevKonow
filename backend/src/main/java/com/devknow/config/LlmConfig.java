@@ -51,6 +51,10 @@ public class LlmConfig {
     @Value("${llm.base-url}")           private String baseUrl;
     @Value("${llm.api-key}")            private String apiKey;
     @Value("${llm.chat-model}")         private String chatModel;
+    // ---- 轻量模型（幻觉检查第一/二关用）—— 默认走与主力模型相同配置，可独立设定 ----
+    @Value("${llm.fast-chat-model:${llm.chat-model}}")   private String fastChatModel;
+    @Value("${llm.fast-base-url:${llm.base-url}}")       private String fastBaseUrl;
+    @Value("${llm.fast-api-key:${llm.api-key}}")         private String fastApiKey;
     @Value("${llm.embedding-base-url}") private String embBaseUrl;
     @Value("${llm.embedding-api-key}")  private String embApiKey;
     @Value("${llm.embedding-model}")    private String embModel;
@@ -120,6 +124,27 @@ public class LlmConfig {
         Map<String, String> headers = parseCustomHeaders();
         if (!headers.isEmpty()) builder.customHeaders(headers);
         log.info("Chat 模型装配完成：base-url={}, model={}", baseUrl, chatModel);
+        return builder.build();
+    }
+
+    /**
+     * 轻量非流式模型：用于幻觉检查第一关（chunk 判题）和第二关（事实验证）。
+     * 这些是二元分类任务，小模型（如 gpt-4o-mini / DeepSeek-Tiny）即可胜任，
+     * 成本更低、速度更快。
+     * 默认复用主力 chat 模型配置，通过 llm.fast-* 独立覆盖。
+     */
+    @Bean
+    public ChatLanguageModel fastChatLanguageModel() {
+        var builder = OpenAiChatModel.builder()
+                .baseUrl(fastBaseUrl).apiKey(resolveKey(fastApiKey, "fast-chat")).modelName(fastChatModel)
+                .temperature(0.1)  // 分类任务用低温度，偏向确定
+                .timeout(Duration.ofSeconds(chatTimeoutSeconds))
+                .maxRetries(maxRetries)
+                .logRequests(logRequests).logResponses(logResponses);
+        if (StringUtils.hasText(organizationId)) builder.organizationId(organizationId.trim());
+        Map<String, String> headers = parseCustomHeaders();
+        if (!headers.isEmpty()) builder.customHeaders(headers);
+        log.info("轻量 Chat 模型装配完成：base-url={}, model={}", fastBaseUrl, fastChatModel);
         return builder.build();
     }
 

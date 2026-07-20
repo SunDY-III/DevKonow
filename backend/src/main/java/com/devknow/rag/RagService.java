@@ -37,6 +37,7 @@ public class RagService {
     private final CrossEncoderReranker crossEncoderReranker;
     private final HydeGenerator hydeGenerator;
     private final CorrectiveEvaluator correctiveEvaluator;
+    private final HallucinationGuard hallucinationGuard;
     private final MmrSelector mmrSelector;
     private final QueryExpander queryExpander;
     private final TokenAuditService tokenAuditService;
@@ -255,11 +256,16 @@ public class RagService {
                     return retryHits;
                 });
 
-        List<ScoredChunk> finalChunks = cragResult.verdict() == CorrectiveEvaluator.EvaluationVerdict.LOW_CONFIDENCE
-                ? List.of()   // 低置信 → 让 ChatService 走 Agent 兜底
+        List<ScoredChunk> cragChunks = cragResult.verdict() == CorrectiveEvaluator.EvaluationVerdict.LOW_CONFIDENCE
+                ? List.of()
                 : cragResult.chunks();
 
-        log.info("levelAwareRetrieve: q={}, role={}, level={}, conf={}, A_hits={}, B={}, CRAG={}, MMR(lambda={})={}/{}, pool={}, graphRelated={}, expanded={}",
+        // 步骤 10: 幻觉第一关 — LLM 逐条过滤不相关的 chunk
+        List<ScoredChunk> finalChunks = !cragChunks.isEmpty()
+                ? hallucinationGuard.executeCheckpoint1(question, cragChunks)
+                : cragChunks;
+
+        log.info("levelAwareRetrieve: q={}, role={}, level={}, conf={}, A_hits={}, B={}, CRAG={}, MMR(lambda={})={}/{}, pool={}, graphRelated={}, expanded={}, H1_filtered={}",
                 question, userRole, targetLevel, String.format("%.2f", confidence),
                 vectorHits.size(), needRouteB, cragResult.verdict(), String.format("%.2f", adaptiveLambda),
                 diverse.size(), candidates.size(), candidatePoolSize,
