@@ -11,3 +11,4 @@ target/
 .vscode/
 .claude/
 optimization_output.json
+optimization_output.json
