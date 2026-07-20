@@ -6,6 +6,7 @@
   <img src="https://img.shields.io/badge/Qdrant-1.15.0-blueviolet" alt="Qdrant 1.15.0">
   <img src="https://img.shields.io/badge/Neo4j-Embedded-008CC1" alt="Neo4j Embedded">
   <img src="https://img.shields.io/badge/LangChain4j-0.36.2-purple" alt="LangChain4j 0.36.2">
+  <img src="https://img.shields.io/badge/Tauri-2.x-FFC131?logo=tauri" alt="Tauri 2.x">
   <img src="https://img.shields.io/badge/License-MIT-yellow" alt="License MIT">
 </p>
 
@@ -106,6 +107,24 @@ npm install
 npm run dev
 # 访问 http://localhost:5173
 ```
+
+### 6. 桌面端（可选）
+
+前端已集成 [Tauri](https://v2.tauri.app) 作为桌面壳，可编译为独立窗口（无需浏览器）：
+
+```bash
+# 安装 Rust（如未安装）: https://rustup.rs
+# Windows 需要 Visual Studio Build Tools 2022（MSVC v143 + Windows SDK）
+
+# 编译
+cd frontend && npm install
+./build-tauri.bat
+
+# 运行桌面窗口
+./src-tauri/target/debug/devknow.exe
+```
+
+> **注意**：Windows 下 Git Bash 的 `/usr/bin/link.exe` 会拦截 MSVC 链接器，请使用 `build-tauri.bat` 或 Visual Studio 开发者命令提示符编译。
 
 ---
 
@@ -305,6 +324,7 @@ app.neo4j.data-dir: data/neo4j
 | 熔断降级 | Resilience4j | 2.2.0 |
 | 鉴权 | JWT (jjwt) | 0.11.5 |
 | 前端 | Vue 3 + Vite | 6.4 |
+| 桌面壳 | Tauri | 2.x |
 
 ---
 
@@ -313,6 +333,7 @@ app.neo4j.data-dir: data/neo4j
 ```
 zhishu-ai-agent/
 ├── docker-compose.yml            # 5 个中间件容器编排
+├── build-tauri.bat               # Tauri 桌面端一键编译脚本
 ├── backend/
 │   ├── pom.xml                   # Maven 依赖管理
 │   ├── sql/                      # 数据库 DDL（3 个迁移脚本）
@@ -335,7 +356,17 @@ zhishu-ai-agent/
 │           ├── governance/       # 限流/熔断/审计/敏感词
 │           ├── config/           # 配置装配
 │           └── controller/       # REST API
+├── src-tauri/                    # ★ Tauri 桌面壳
+│   ├── Cargo.toml               # Rust 依赖
+│   ├── tauri.conf.json          # 窗口 / 应用配置 (1280x860)
+│   ├── build.rs                 # 构建脚本
+│   ├── src/
+│   │   ├── main.rs              # 桌面入口
+│   │   └── lib.rs               # Tauri 启动逻辑
+│   └── icons/                   # 应用图标
 └── frontend/
+    ├── package.json              # Vue 3 + Vite + @tauri-apps/cli
+    ├── vite.config.js            # 含 Tauri file:// 适配
     └── src/
         ├── App.vue               # 顶栏 + 模式切换
         ├── components/ScipModal.vue
