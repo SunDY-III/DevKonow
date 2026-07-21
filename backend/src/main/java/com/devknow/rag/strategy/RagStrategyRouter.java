@@ -6,7 +6,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.Arrays;
-import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -31,7 +31,7 @@ import java.util.stream.Collectors;
 @Component
 public class RagStrategyRouter {
 
-    private final Map<String, ChunkStrategy> strategyMap = new HashMap<>();
+    private final Map<String, ChunkStrategy> strategyMap = new ConcurrentHashMap<>();
 
     // ======================== 公共参数（各场景共用） ========================
 

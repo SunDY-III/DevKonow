@@ -343,8 +343,8 @@ public class HallucinationGuard {
      */
     public List<ScoredChunk> executeCheckpoint1(String question, List<ScoredChunk> chunks,
                                                  double confidence, java.util.List<Integer> skipCheckpoints) {
-        // 1) 策略跳过：场景配置要求跳过第一关
-        if (skipCheckpoints != null && skipCheckpoints.contains(1)) {
+        // 1) 策略跳过：场景配置要求跳过第一关（防御: 非Integer元素会被contains忽略）
+        if (skipCheckpoints != null && skipCheckpoints.contains(Integer.valueOf(1))) {
             log.info("[幻觉-第一关] 策略跳过: skipCheckpoints={}", skipCheckpoints);
             return chunks;
         }

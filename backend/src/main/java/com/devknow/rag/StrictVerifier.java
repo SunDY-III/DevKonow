@@ -65,8 +65,8 @@ public class StrictVerifier {
             } else {
                 String reason = buildRejectionReason(c, score, methodName, className);
                 diagnostics.add(reason);
-                log.debug("StrictVerifier 过滤: chunkId={}, fileName={}, score={:.2f}, reason={}",
-                        c.getChunkId(), c.getFileName(), score, reason);
+                log.debug("StrictVerifier 过滤: chunkId={}, fileName={}, score={}, reason={}",
+                        c.getChunkId(), c.getFileName(), String.format("%.2f", score), reason);
             }
         }
 
