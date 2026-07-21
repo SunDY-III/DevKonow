@@ -92,7 +92,6 @@ public class SemanticCacheService {
 
                 for (Points.ScoredPoint result : results) {
                     if (result.getScore() >= threshold) {
-                        // 从 payload 中的 redisKey 获取完整条目
                         String redisKey = result.getPayloadOrDefault("redis_key", value("")).getStringValue();
                         if (!redisKey.isEmpty()) {
                             String json = redis.opsForValue().get(redisKey);
@@ -103,6 +102,15 @@ public class SemanticCacheService {
                                             result.getScore(), redisKey);
                                     return Optional.of(entry);
                                 } catch (Exception ignored) {}
+                            } else {
+                                // 惰性删除：Redis 条目已过期，清理 Qdrant 中的孤立向量
+                                try {
+                                    qdrant.deleteAsync(CACHE_COLLECTION, List.of(result.getId()))
+                                            .get(1, TimeUnit.SECONDS);
+                                    log.debug("清理孤立 Qdrant 缓存向量: pointId={}", result.getId());
+                                } catch (Exception ex) {
+                                    log.debug("清理孤立 Qdrant 向量失败: {}", ex.getMessage());
+                                }
                             }
                         }
                     }
@@ -175,13 +183,18 @@ public class SemanticCacheService {
                 for (float v : vec) qVec.add(v);
 
                 // 500ms 超时：不等 Qdrant 写入完成，不阻塞主流程
-                qdrant.upsertAsync(CACHE_COLLECTION, List.of(
-                        Points.PointStruct.newBuilder()
-                                .setId(id(pointId))
-                                .setVectors(vectors(qVec))
-                                .putPayload("redis_key", value(redisKey))
-                                .build()
-                )).get(500, TimeUnit.MILLISECONDS);
+                var pointBuilder = Points.PointStruct.newBuilder()
+                        .setId(id(pointId))
+                        .setVectors(vectors(qVec))
+                        .putPayload("redis_key", value(redisKey));
+                // 将 sourceDocIds 写入 Qdrant payload，支持按文档清理向量
+                if (sourceDocIds != null && !sourceDocIds.isEmpty()) {
+                    for (Long docId : sourceDocIds) {
+                        pointBuilder.putPayload("doc_" + docId, value("1"));
+                    }
+                }
+                qdrant.upsertAsync(CACHE_COLLECTION, List.of(pointBuilder.build()))
+                        .get(500, TimeUnit.MILLISECONDS);
             } catch (java.util.concurrent.TimeoutException te) {
                 log.debug("Qdrant 缓存写入超时（预期内，Cache-Aside 降级）");
             } catch (Exception ex) {
