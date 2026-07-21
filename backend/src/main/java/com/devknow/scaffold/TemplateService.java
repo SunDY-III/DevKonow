@@ -6,6 +6,7 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
@@ -22,7 +23,12 @@ import java.util.concurrent.Executors;
 public class TemplateService {
 
     private final ScaffoldGenerator scaffoldGenerator;
-    private final ExecutorService executor = Executors.newCachedThreadPool();
+    private final ExecutorService executor = Executors.newFixedThreadPool(2);
+
+    @PreDestroy
+    public void shutdown() {
+        executor.shutdown();
+    }
 
     /**
      * 获取模板列表。

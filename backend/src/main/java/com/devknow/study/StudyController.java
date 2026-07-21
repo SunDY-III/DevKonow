@@ -30,6 +30,7 @@ public class StudyController {
     private final LearningPathService learningPathService;
     private final KnowledgeExtractor knowledgeExtractor;
     private final CodeProjectRepository projectRepository;
+    private final java.util.concurrent.ExecutorService asyncExecutor;
 
     /**
      * 获取项目架构分析结果。
@@ -128,6 +129,7 @@ public class StudyController {
         SseEmitter emitter = new SseEmitter(60_000L);
 
         CompletableFuture.runAsync(() -> {
+
             try {
                 String question = (String) request.get("question");
                 String answer = (String) request.get("answer");
