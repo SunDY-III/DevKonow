@@ -7,8 +7,14 @@
         <button v-if="!submitted" class="skip-btn" @click="$emit('skip')">跳过</button>
       </div>
 
+      <!-- 错误提示 -->
+      <div v-if="error" class="feynman-error">
+        <p>{{ error }}</p>
+        <button class="retry-btn" @click="startSession">重试</button>
+      </div>
+
       <!-- 等待问题 -->
-      <div v-if="loading" class="feynman-loading">
+      <div v-else-if="loading" class="feynman-loading">
         <div class="loading-spinner"></div>
         <span>正在生成检验问题...</span>
       </div>
@@ -71,6 +77,7 @@ const emit = defineEmits(['skip', 'complete'])
 const loading = ref(false)
 const submitted = ref(false)
 const submitting = ref(false)
+const error = ref('')
 const userAnswer = ref('')
 const round = ref(1)
 const result = ref(null)
@@ -85,22 +92,33 @@ watch(() => props.visible, (val) => {
 
 async function startSession() {
   loading.value = true
+  error.value = ''
   submitted.value = false
   result.value = null
   finalResult.value = null
   round.value = 1
 
-  const es = createFeynmanSSE(props.conversationId, props.question, props.answer)
-  es.addEventListener('question', (e) => {
-    const data = JSON.parse(e.data)
-    verifyQuestion.value = data.question
+  try {
+    const es = createFeynmanSSE(props.conversationId, props.question, props.answer)
+    es.addEventListener('question', (e) => {
+      const data = JSON.parse(e.data)
+      verifyQuestion.value = data.question
+      loading.value = false
+    })
+    es.addEventListener('error', () => {
+      loading.value = false
+      error.value = '连接中断，请重试'
+      es.close()
+    })
+    es.onerror = () => {
+      loading.value = false
+      error.value = '无法连接检验服务'
+      es.close()
+    }
+  } catch (err) {
     loading.value = false
-  })
-  es.addEventListener('error', () => {
-    loading.value = false
-    es.close()
-  })
-  es.onerror = () => { loading.value = false; es.close() }
+    error.value = '启动检验失败: ' + err.message
+  }
 }
 
 async function submit() {
@@ -159,6 +177,8 @@ function nextRound() {
   font-size: 12px; color: #8a857a; background: none; border: none; cursor: pointer;
 }
 .skip-btn:hover { color: #c15f3c; }
+.feynman-error { padding: 12px; text-align: center; color: #c15f3c; }
+.retry-btn { margin-top: 8px; padding: 6px 14px; background: #c15f3c; color: #fff; border: none; border-radius: 6px; font-size: 12px; cursor: pointer; }
 .feynman-loading { display: flex; align-items: center; gap: 8px; color: #8a857a; font-size: 13px; }
 .loading-spinner {
   width: 14px; height: 14px;

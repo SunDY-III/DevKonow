@@ -9,8 +9,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import jakarta.annotation.PreDestroy;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Feynman 检验 REST API。
@@ -24,6 +27,12 @@ import java.util.concurrent.CompletableFuture;
 public class FeynmanController {
 
     private final FeynmanService feynmanService;
+    private final ExecutorService feynmanExecutor = Executors.newFixedThreadPool(4);
+
+    @PreDestroy
+    public void shutdown() {
+        feynmanExecutor.shutdown();
+    }
 
     /**
      * 开始 Feynman 检验（SSE）。
@@ -39,6 +48,8 @@ public class FeynmanController {
         SseEmitter emitter = new SseEmitter(300_000L);
 
         CompletableFuture.runAsync(() -> {
+
+
             try {
                 // 生成追问
                 String verifyQuestion = feynmanService.generateVerifyQuestion(

@@ -100,10 +100,11 @@ public class FeynmanService {
             String clean = json.replaceAll("```json\\s*", "").replaceAll("```\\s*", "").trim();
             return objectMapper.readValue(clean, FeynmanJudgment.class);
         } catch (JsonProcessingException e) {
-            log.warn("Feynman 评判 JSON 解析失败: {}", json, e);
+            log.warn("Feynman 评判 JSON 解析失败: {}, 降级为不通过", json, e);
             FeynmanJudgment fallback = new FeynmanJudgment();
-            fallback.setCorrect(true);
-            fallback.setFeedback("理解正确！");
+            fallback.setCorrect(false);
+            fallback.setFeedback("评判解析异常，请重试");
+            fallback.setHint("系统暂时无法评判你的回答，请稍后重试");
             return fallback;
         }
     }

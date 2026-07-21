@@ -37,7 +37,10 @@ defineProps({ kp: { type: Object, required: true } })
 .kp-difficulty.level-5 { background: #f3e5f5; color: #6a1b9a; }
 .kp-title { font-size: 13px; font-weight: 600; color: #2d2a24; margin: 0; }
 .kp-pattern { font-size: 10px; padding: 1px 5px; background: #f0ece4; border-radius: 3px; color: #5a5548; }
-.kp-concept { font-size: 12px; color: #5a5548; line-height: 1.5; margin: 0 0 8px; }
+.kp-concept {
+  font-size: 12px; color: #5a5548; line-height: 1.5; margin: 0 0 8px;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
 .kp-meta { display: flex; gap: 12px; }
 .kp-pass, .kp-review { font-size: 11px; color: #8a857a; }
 </style>
