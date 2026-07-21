@@ -70,3 +70,13 @@ export function getMentorPlan(projectId) {
 export function getMentorAchievements(projectId) {
   return request(`/mentor/${projectId}/achievements`)
 }
+
+// ================== Feynman 检验 ==================
+export { createFeynmanSSE, submitFeynmanAnswer, skipFeynman } from './feynman.js'
+
+// ================== 研读（知识提取 + 面试 + 代码评分） ==================
+export {
+  createExtractSSE, getKnowledgePoints, getSkillTree, getStudyStats,
+  generateInterviewQuestions, generateFollowUp, generateFeedback,
+  scoreCodeQuality, getProgressOverview
+} from './study.js'

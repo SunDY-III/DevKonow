@@ -56,6 +56,25 @@
                 {{ src.file }}#{{ src.seq }}
               </span>
             </div>
+            <!-- Feynman 检验入口 -->
+            <div v-if="msg.completed && !msg.feynmanStarted" class="msg-actions">
+              <button class="action-chip" @click="startFeynman(msg, i)">
+                🧪 检验理解
+              </button>
+              <button class="action-chip" @click="extractKnowledge(msg, i)">
+                📝 提炼笔记
+              </button>
+            </div>
+            <!-- Feynman 面板 -->
+            <FeynmanPanel
+              v-if="msg.showFeynman"
+              :visible="msg.showFeynman"
+              :conversation-id="conversationId"
+              :question="messages[i-1]?.content || ''"
+              :answer="msg.content"
+              @skip="msg.showFeynman = false"
+              @complete="onFeynmanComplete(msg, $event)"
+            />
           </div>
         </div>
       </div>
@@ -92,6 +111,7 @@
 import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { useProjectStore } from '../stores/useProjectStore.js'
+import FeynmanPanel from '../components/FeynmanPanel.vue'
 
 const route = useRoute()
 const projectStore = useProjectStore()
@@ -108,6 +128,56 @@ const messageList = ref(null)
 const searchInput = ref(null)
 
 let es = null
+const conversationId = ref(Date.now().toString())
+
+function startFeynman(msg, index) {
+  msg.feynmanStarted = true
+  msg.showFeynman = true
+}
+
+function onFeynmanComplete(msg, result) {
+  msg.showFeynman = false
+  if (result.passed) {
+    msg.feynmanPassed = true
+  }
+}
+
+async function extractKnowledge(msg, index) {
+  const prevMsg = messages.value[index - 1]
+  const question = prevMsg?.content || ''
+  const answer = msg.content
+
+  try {
+    const resp = await fetch('/api/study/extract', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question,
+        answer,
+        codeContext: null,
+        projectId: currentProjectId.value || null
+      })
+    })
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const text = decoder.decode(value)
+      const lines = text.split('\n').filter(l => l.startsWith('data: '))
+      for (const line of lines) {
+        const data = JSON.parse(line.slice(6))
+        if (data.stage) {
+          console.log('提取阶段:', data.stage)
+        } else if (data.title) {
+          msg.extractedNote = data
+        }
+      }
+    }
+  } catch (err) {
+    console.error('知识提取失败', err)
+  }
+}
 
 onMounted(async () => {
   await projectStore.ensureLoaded()
@@ -184,7 +254,11 @@ async function send() {
     fromCache.value = e.data === 'true'
   })
 
-  es.addEventListener('done', () => { es.close(); loading.value = false; scrollToBottom() })
+  es.addEventListener('done', () => {
+    es.close(); loading.value = false; scrollToBottom()
+    const last = messages.value[messages.value.length - 1]
+    if (last?.role === 'assistant') last.completed = true
+  })
   es.addEventListener('error', () => { es.close(); loading.value = false })
 }
 
@@ -453,6 +527,27 @@ onUnmounted(() => { if (es) es.close() })
   transition: background 0.12s;
 }
 .source-chip:hover { background: #e8e3d8; }
+
+.msg-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.action-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: #f5ede8;
+  border: 1px solid #e8e3d8;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #5a5548;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.action-chip:hover { background: #e8dcd4; border-color: #d4cfc2; color: #c15f3c; }
 
 /* ── Typing ── */
 .typing-line {
