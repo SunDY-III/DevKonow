@@ -54,7 +54,7 @@
               <span v-for="(src, j) in msg.sources" :key="j" class="source-chip" style="cursor:pointer" @click="reviewSource(src, msg)">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                 {{ src.file }}#{{ src.seq }}
-                <span class="review-badge">🔒</span>
+                <span class="review-badge">{{ msg.safetyLoading ? '⏳' : '🔒' }}</span>
               </span>
             </div>
             <!-- Feynman 检验入口 -->
@@ -120,6 +120,7 @@ import { useRoute } from 'vue-router'
 import { useProjectStore } from '../stores/useProjectStore.js'
 import FeynmanPanel from '../components/FeynmanPanel.vue'
 import SafetyReport from '../components/SafetyReport.vue'
+import { reviewCodeRange } from '../api/index.js'
 
 const route = useRoute()
 const projectStore = useProjectStore()
@@ -194,8 +195,6 @@ async function extractKnowledge(msg, index) {
     msg.extracting = false
   }
 }
-
-import { reviewCodeRange } from '../api/index.js'
 
 async function reviewSource(src, msg) {
   if (msg.safetyLoading) return

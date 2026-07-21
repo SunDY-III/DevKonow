@@ -103,6 +103,7 @@ public class SafetyReviewService {
             report.setReviewedFile(filePath);
             report.setStartLine(startLine);
             report.setEndLine(endLine);
+            if (report.getIssues() == null) report.setIssues(new ArrayList<>());
             return report;
         } catch (JsonProcessingException e) {
             log.warn("安全审查 JSON 解析失败", e);
@@ -112,21 +113,40 @@ public class SafetyReviewService {
 
     private String readCodeRange(Long projectId, String filePath, int startLine, int endLine) {
         try {
-            // 尝试直接读取（绝对路径或相对路径）
-            Path path = Paths.get(filePath);
-            if (!path.isAbsolute() && projectId != null) {
-                // 从项目根目录拼接
+            Path path;
+            Path projectRoot = null;
+
+            if (projectId != null) {
                 CodeProject project = projectRepository.findById(projectId).orElse(null);
                 if (project != null && project.getRepoUrls() != null) {
                     String repoUrl = extractFirstRepoUrl(project);
-                    String repoName = GitRepoManager.extractRepoName(repoUrl);
-                    Path repoPath = gitRepoManager.getRepoPath(projectId, repoName);
-                    path = repoPath.resolve(filePath);
+                    if (repoUrl != null) {
+                        String repoName = GitRepoManager.extractRepoName(repoUrl);
+                        projectRoot = gitRepoManager.getRepoPath(projectId, repoName).normalize();
+                    }
                 }
             }
 
-            if (!path.toFile().exists()) {
+            if (projectRoot != null) {
+                // 相对路径 → 从项目根解析，并验证不越界
+                path = projectRoot.resolve(filePath).normalize();
+                if (!path.startsWith(projectRoot)) {
+                    log.warn("路径越界: filePath={}, resolved={}, root={}", filePath, path, projectRoot);
+                    return null;
+                }
+            } else {
+                // 绝对路径直接读取
+                path = Paths.get(filePath).normalize();
+            }
+
+            if (!path.toFile().exists() || !path.toFile().isFile()) {
                 log.warn("文件不存在: {}", path);
+                return null;
+            }
+
+            // 跳过过大文件
+            if (path.toFile().length() > 500_000) {
+                log.warn("文件过大: {} ({} bytes)", path, path.toFile().length());
                 return null;
             }
 
