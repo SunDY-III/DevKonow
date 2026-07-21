@@ -76,10 +76,11 @@ public class KnowledgeExtractor {
 
         } catch (JsonProcessingException e) {
             log.warn("知识提取 JSON 解析失败", e);
-            // 降级：保存为简单文本
+            String safeAnswer = answer != null ? answer : "";
+            String truncatedConcept = safeAnswer.length() > 200 ? safeAnswer.substring(0, 200) + "..." : safeAnswer;
             KnowledgePoint kp = KnowledgePoint.builder()
                     .title("知识点")
-                    .concept(answer.length() > 200 ? answer.substring(0, 200) + "..." : answer)
+                    .concept(truncatedConcept)
                     .difficultyLevel(3)
                     .sourceQuestion(question)
                     .relatedProjectId(projectId)

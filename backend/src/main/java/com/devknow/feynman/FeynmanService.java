@@ -36,10 +36,11 @@ public class FeynmanService {
 
     /**
      * 基于原始 LLM 回答生成 Feynman 追问。
+     *
+     * @param userId 用户 ID（由调用方传入，避免异步 ThreadLocal 丢失）
      */
-    public String generateVerifyQuestion(String conversationId, String originalQuestion,
+    public String generateVerifyQuestion(Long userId, String conversationId, String originalQuestion,
                                           String originalAnswer, List<String> sourceChunks) {
-        long userId = UserContext.require();
         String prompt = """
                 你是一名编程导师。你的学生刚刚学习了以下内容：
 

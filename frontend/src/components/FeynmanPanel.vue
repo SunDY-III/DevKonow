@@ -62,7 +62,7 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, watch, onUnmounted } from 'vue'
 import { createFeynmanSSE, submitFeynmanAnswer } from '../api/feynman.js'
 
 const props = defineProps({
@@ -73,6 +73,12 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['skip', 'complete'])
+
+let eventSource = null
+
+onUnmounted(() => {
+  if (eventSource) { eventSource.close(); eventSource = null; }
+})
 
 const loading = ref(false)
 const submitted = ref(false)
@@ -99,21 +105,22 @@ async function startSession() {
   round.value = 1
 
   try {
-    const es = createFeynmanSSE(props.conversationId, props.question, props.answer)
-    es.addEventListener('question', (e) => {
+    if (eventSource) { eventSource.close(); }
+    eventSource = createFeynmanSSE(props.conversationId, props.question, props.answer)
+    eventSource.addEventListener('question', (e) => {
       const data = JSON.parse(e.data)
       verifyQuestion.value = data.question
       loading.value = false
     })
-    es.addEventListener('error', () => {
+    eventSource.addEventListener('error', () => {
       loading.value = false
       error.value = '连接中断，请重试'
-      es.close()
+      eventSource?.close()
     })
-    es.onerror = () => {
+    eventSource.onerror = () => {
       loading.value = false
       error.value = '无法连接检验服务'
-      es.close()
+      eventSource?.close()
     }
   } catch (err) {
     loading.value = false

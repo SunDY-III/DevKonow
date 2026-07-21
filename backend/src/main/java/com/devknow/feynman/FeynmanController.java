@@ -19,6 +19,7 @@ import java.util.concurrent.Executors;
  * Feynman 检验 REST API。
  *
  * <p>独立 SSE 端点，不污染通用 Chat 流。
+ * 注意：UserContext ThreadLocal 不跨异步边界传播，必须在异步前捕获 userId。
  */
 @Slf4j
 @RestController
@@ -36,7 +37,6 @@ public class FeynmanController {
 
     /**
      * 开始 Feynman 检验（SSE）。
-     * 服务端推送：question / result / passed / failed
      */
     @GetMapping(value = "/session", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter startSession(
@@ -44,22 +44,18 @@ public class FeynmanController {
             @RequestParam String question,
             @RequestParam String answer,
             @RequestParam(required = false) String sourceChunks) {
-        UserContext.require();
+        Long userId = UserContext.require(); // 异步前捕获
         SseEmitter emitter = new SseEmitter(300_000L);
 
         CompletableFuture.runAsync(() -> {
-
-
             try {
-                // 生成追问
                 String verifyQuestion = feynmanService.generateVerifyQuestion(
-                        conversationId, question, answer,
+                        userId, conversationId, question, answer,
                         sourceChunks != null ? java.util.List.of(sourceChunks.split(",")) : java.util.List.of());
 
-                // 初始化会话
                 FeynmanSession session = new FeynmanSession();
                 session.setConversationId(conversationId);
-                session.setUserId(UserContext.get());
+                session.setUserId(userId);
                 session.setQuestion(question);
                 session.setOriginalAnswer(answer);
                 session.setStatus("questioning");
@@ -67,25 +63,28 @@ public class FeynmanController {
 
                 emitter.send(SseEmitter.event().name("question").data(
                         Map.of("question", verifyQuestion, "round", 1)));
+                emitter.complete();
 
             } catch (Exception e) {
+                log.error("Feynman SSE 异常", e);
                 try { emitter.send(SseEmitter.event().name("error").data(Map.of("message", e.getMessage()))); }
                 catch (Exception ignored) {}
+                try { emitter.complete(); } catch (Exception ignored) {}
             }
-        });
+        }, feynmanExecutor); // 使用专用线程池
 
         emitter.onCompletion(() -> {});
         emitter.onTimeout(() -> {});
         return emitter;
     }
 
-    /**
-     * 提交 Feynman 回答。
-     */
     @PostMapping("/answer")
     public ResponseEntity<Map<String, Object>> submitAnswer(@RequestBody Map<String, String> request) {
         String conversationId = request.get("conversationId");
         String userAnswer = request.get("answer");
+        if (conversationId == null || userAnswer == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "conversationId and answer are required"));
+        }
 
         var sessionOpt = feynmanService.loadSession(conversationId);
         if (sessionOpt.isEmpty()) {
@@ -95,12 +94,13 @@ public class FeynmanController {
         FeynmanSession session = sessionOpt.get();
         int round = session.getRounds().size() + 1;
 
-        // 评判
-        var judgment = feynmanService.judge(conversationId,
-                session.getRounds().isEmpty() ? "" : session.getRounds().get(session.getRounds().size() - 1).getVerifyQuestion(),
-                userAnswer, session.getOriginalAnswer(), round, session.getCorrectCount());
+        String lastQuestion = session.getRounds().isEmpty()
+                ? "" : session.getRounds().get(session.getRounds().size() - 1).getVerifyQuestion();
 
-        // 记录本轮
+        var judgment = feynmanService.judge(conversationId,
+                lastQuestion, userAnswer, session.getOriginalAnswer(),
+                round, session.getCorrectCount());
+
         FeynmanRound fr = new FeynmanRound();
         fr.setRoundNum(round);
         fr.setUserAnswer(userAnswer);
@@ -116,25 +116,18 @@ public class FeynmanController {
             session.setFailedCount(session.getFailedCount() + 1);
         }
 
-        // 判断是否通过
         boolean passed = session.getCorrectCount() >= 2;
         boolean failed = session.getFailedCount() >= 2 || round >= 3;
 
-        if (passed) {
-            session.setStatus("passed");
-            session.setPassed(true);
-        } else if (failed) {
-            session.setStatus("failed");
-            session.setFailed(true);
-        } else {
-            session.setStatus("questioning");
-        }
+        if (passed) { session.setStatus("passed"); session.setPassed(true); }
+        else if (failed) { session.setStatus("failed"); session.setFailed(true); }
+        else { session.setStatus("questioning"); }
 
         feynmanService.saveSession(session);
 
         return ResponseEntity.ok(Map.of(
                 "correct", judgment.isCorrect(),
-                "feedback", judgment.getFeedback(),
+                "feedback", judgment.getFeedback() != null ? judgment.getFeedback() : "",
                 "hint", judgment.getHint() != null ? judgment.getHint() : "",
                 "gapAnalysis", judgment.getGapAnalysis() != null ? judgment.getGapAnalysis() : "",
                 "passed", session.isPassed(),
@@ -148,6 +141,9 @@ public class FeynmanController {
     @PostMapping("/skip")
     public ResponseEntity<Map<String, Object>> skip(@RequestBody Map<String, String> request) {
         String conversationId = request.get("conversationId");
+        if (conversationId == null) {
+            return ResponseEntity.ok(Map.of("skipped", false));
+        }
         var sessionOpt = feynmanService.loadSession(conversationId);
         if (sessionOpt.isPresent()) {
             FeynmanSession session = sessionOpt.get();

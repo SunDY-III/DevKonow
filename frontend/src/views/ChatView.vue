@@ -148,6 +148,7 @@ async function extractKnowledge(msg, index) {
   const answer = msg.content
 
   try {
+    msg.extracting = true
     const resp = await fetch('/api/study/extract', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -158,6 +159,10 @@ async function extractKnowledge(msg, index) {
         projectId: currentProjectId.value || null
       })
     })
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}))
+      throw new Error(errData.message || `HTTP ${resp.status}`)
+    }
     const reader = resp.body.getReader()
     const decoder = new TextDecoder()
     while (true) {
@@ -176,6 +181,9 @@ async function extractKnowledge(msg, index) {
     }
   } catch (err) {
     console.error('知识提取失败', err)
+    msg.extractError = err.message
+  } finally {
+    msg.extracting = false
   }
 }
 

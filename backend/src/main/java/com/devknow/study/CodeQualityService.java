@@ -38,8 +38,13 @@ public class CodeQualityService {
      */
     public QualityReport score(String code, String language, String context) {
         long userId = UserContext.require();
+        if (code == null || code.isBlank()) {
+            QualityReport empty = new QualityReport();
+            empty.setSummary("代码内容为空");
+            return empty;
+        }
 
-        // 大文件截取前 200 行
+        // 大文件截取前 200 行，防 token 溢出
         String[] lines = code.split("\n");
         String codeForAnalysis = lines.length > 200
                 ? String.join("\n", java.util.Arrays.copyOf(lines, 200))
