@@ -301,6 +301,15 @@ async function send() {
     if (last?.role === 'assistant') last.completed = true
   })
   es.addEventListener('error', () => { es.close(); loading.value = false })
+
+  // 幻觉校正：LlmStreamingService 发来的修正后答案
+  es.addEventListener('corrected', (e) => {
+    const last = messages.value[messages.value.length - 1]
+    if (last?.role === 'assistant') {
+      last.content = e.data
+    }
+    scrollToBottom()
+  })
 }
 
 function scrollToBottom() {

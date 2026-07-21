@@ -87,6 +87,68 @@ app:
     rerank-top-n: 4           # 重排后进入 Prompt 的片段数
     rrf-k: 60                 # RRF 平滑常数
     confidence-threshold: 0.45  # 检索置信度低于该值 -> 转工单 Agent
+
+    # ==================== 多场景策略配置 ====================
+    # 每个场景独立配置 chunk 切分粒度、检查点掩码、HyDE/MMR 开关等参数。
+    # 通过 RagStrategyRouter 在运行时按场景名称路由。
+    strategies:
+      # ---- 学习研读场景 ----
+      # 大 chunk（1024）+ 宽 overlap（12.5%），跳过 C1+C2 鉴定点，
+      # 关闭 HyDE/MMR（已在管线中无条件执行），适合系统性学习。
+      learn:
+        chunk-size: 1024
+        chunk-overlap: 128
+        skip-checkpoints: "1,2"
+        hyde-enabled: false
+        mmr-enabled: false
+
+      # ---- 代码面试/审查场景 ----
+      # 大 chunk（2048）覆盖完整类接口，跳过 C2 且提高触发门槛至 0.9，
+      # HyDE 保留弥合语义鸿沟，MMR 保留但 λ≥0.75 偏相关性。
+      interview:
+        chunk-size: 2048
+        chunk-overlap: 320
+        skip-checkpoints: ""
+        hyde-enabled: true
+        mmr-enabled: true
+
+      # ---- 安全审查场景 ----
+      # 小 chunk（256）支持行级原文定位，全部三个检查点保留，
+      # HyDE 帮助模糊安全表述映射到精确代码模式，MMR 覆盖不同代码块。
+      safety:
+        chunk-size: 256
+        chunk-overlap: 64
+        skip-checkpoints: ""
+        hyde-enabled: true
+        mmr-enabled: true
+
+      # ---- 代码检索场景 ----
+      # 中 chunk（384）覆盖完整方法体，overlap=0 因按方法边界切分时重叠矛盾，
+      # 保留全部检查点，HyDE 弥合 NL-代码语义差距，MMR 关闭（重排器已处理）。
+      code:
+        chunk-size: 384
+        chunk-overlap: 0
+        skip-checkpoints: ""
+        hyde-enabled: true
+        mmr-enabled: false
+
+      # ---- 中文技术文档场景（默认精准模式） ----
+      # 标准 chunk（500）+ 16% overlap，全部检查点保留，
+      # HyDE/MMR 均开启，MMR λ 动态自适应。
+      doc:
+        chunk-size: 500
+        chunk-overlap: 80
+        skip-checkpoints: ""
+        hyde-enabled: true
+        mmr-enabled: true
+
+      # ---- 默认兜底策略（同 doc 精准模式） ----
+      default:
+        chunk-size: 500
+        chunk-overlap: 80
+        skip-checkpoints: ""
+        hyde-enabled: true
+        mmr-enabled: true
   semantic-cache:
     threshold: 0.95           # 语义缓存命中阈值（偏保守，降低误命中）
     ttl-hours: 24

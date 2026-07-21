@@ -39,6 +39,9 @@ public class ChatService {
     @Value("${app.rag.confidence-threshold}")
     private double confidenceThreshold;
 
+    @Value("${app.rag.method-level-retrieve:false}")
+    private boolean methodLevelRetrieve;
+
     private static final Long FALLBACK_PROJECT_ID = 0L;
 
     // ==================== 策略路由映射 ====================
@@ -73,7 +76,15 @@ public class ChatService {
                 log.info("代码路由二级分类: subRoute={}, q={}", subRoute, question);
                 send(emitter, closed, "phase", "code:" + subRoute);
 
-                List<ScoredChunk> results = ragService.retrieveCode(userId, projectId, question);
+                // 方法级检索：当配置开关打开且查询涉及方法时，使用三路渐进架构
+                List<ScoredChunk> results;
+                if (methodLevelRetrieve && ("method".equals(subRoute) || "callchain".equals(subRoute))) {
+                    RagResult ragResult = ragService.methodLevelRetrieve(userId, projectId, question);
+                    results = ragResult.getChunks();
+                } else {
+                    results = ragService.retrieveCode(userId, projectId, question);
+                }
+
                 if (!results.isEmpty() && results.get(0).getScore() >= confidenceThreshold) {
                     RagResult rag = new RagResult(results, results.get(0).getScore());
                     llmStreamingService.generateWithFallback(userId, conversationId, question, rag, emitter, closed, queryVector);

@@ -305,7 +305,7 @@ public class HallucinationGuard {
         }
     }
 
-    // ==================== 统一入口（含 CRAG 置信跳过） ====================
+    // ==================== 统一入口（含 CRAG 置信跳过 + 策略检查点掩码） ====================
 
     /**
      * 全链路执行三个鉴定点。
@@ -320,7 +320,7 @@ public class HallucinationGuard {
      * @return 经过第一关过滤后的 chunk 列表
      */
     public List<ScoredChunk> executeCheckpoint1(String question, List<ScoredChunk> chunks) {
-        return executeCheckpoint1(question, chunks, 0.0);
+        return executeCheckpoint1(question, chunks, 0.0, null);
     }
 
     /**
@@ -329,10 +329,31 @@ public class HallucinationGuard {
      * @param confidence 检索置信度，>= HIGH_CONFIDENCE_THRESHOLD 时跳过 LLM 过滤
      */
     public List<ScoredChunk> executeCheckpoint1(String question, List<ScoredChunk> chunks, double confidence) {
+        return executeCheckpoint1(question, chunks, confidence, null);
+    }
+
+    /**
+     * 含置信度 + 策略检查点掩码的第一关。
+     *
+     * <p>当 skipCheckpoints 包含 1 时，跳过第一关（chunk 相关性过滤），
+     * 由策略配置决定（如学习研读场景不使用此关）。
+     * CRAG 高置信跳过仍然优先于策略跳过。
+     *
+     * @param skipCheckpoints 策略指定的跳过列表，包含 1 时跳过第一关
+     */
+    public List<ScoredChunk> executeCheckpoint1(String question, List<ScoredChunk> chunks,
+                                                 double confidence, java.util.List<Integer> skipCheckpoints) {
+        // 1) 策略跳过：场景配置要求跳过第一关
+        if (skipCheckpoints != null && skipCheckpoints.contains(1)) {
+            log.info("[幻觉-第一关] 策略跳过: skipCheckpoints={}", skipCheckpoints);
+            return chunks;
+        }
+        // 2) CRAG 高置信跳过
         if (confidence >= HIGH_CONFIDENCE_THRESHOLD) {
             log.info("[幻觉-第一关] CRAG 高置信跳过: confidence={:.4f} >= {}", confidence, HIGH_CONFIDENCE_THRESHOLD);
             return chunks;
         }
+        // 3) LLM 过滤
         return filterRelevantChunks(question, chunks);
     }
 
@@ -347,7 +368,7 @@ public class HallucinationGuard {
      * @return 经过验证和引用追溯的最终答案
      */
     public String executeCheckpoint2And3(String rawAnswer, List<ScoredChunk> chunks) {
-        return executeCheckpoint2And3(rawAnswer, chunks, 0.0);
+        return executeCheckpoint2And3(rawAnswer, chunks, 0.0, null);
     }
 
     /**
@@ -356,23 +377,43 @@ public class HallucinationGuard {
      * @param confidence 检索置信度，>= HIGH_CONFIDENCE_THRESHOLD 时跳过第二关
      */
     public String executeCheckpoint2And3(String rawAnswer, List<ScoredChunk> chunks, double confidence) {
-        if (confidence >= HIGH_CONFIDENCE_THRESHOLD) {
+        return executeCheckpoint2And3(rawAnswer, chunks, confidence, null);
+    }
+
+    /**
+     * 含置信度 + 策略检查点掩码的第二、三关。
+     *
+     * <p>当 skipCheckpoints 包含 2 时跳过第二关（事实验证），
+     * 包含 3 时跳过第三关（引用追溯）。
+     * 策略跳过优先于 CRAG 高置信跳过。
+     *
+     * @param skipCheckpoints 策略指定的跳过列表
+     */
+    public String executeCheckpoint2And3(String rawAnswer, List<ScoredChunk> chunks,
+                                          double confidence, java.util.List<Integer> skipCheckpoints) {
+        boolean skipC2 = skipCheckpoints != null && skipCheckpoints.contains(2);
+        boolean skipC3 = skipCheckpoints != null && skipCheckpoints.contains(3);
+
+        // 第二关
+        String factChecked = rawAnswer;
+        if (skipC2) {
+            log.info("[幻觉-第二关] 策略跳过: skipCheckpoints={}", skipCheckpoints);
+        } else if (confidence >= HIGH_CONFIDENCE_THRESHOLD) {
             log.info("[幻觉-第二关] CRAG 高置信跳过: confidence={:.4f} >= {}", confidence, HIGH_CONFIDENCE_THRESHOLD);
-            // 跳过第二关，直接执行第三关引用追溯
-            return traceCitations(rawAnswer, chunks);
+        } else {
+            FactCheckResult result = verifyAnswer(rawAnswer, chunks);
+            factChecked = result.cleanedAnswer();
+            if (factChecked == null || factChecked.isBlank()) {
+                factChecked = rawAnswer;
+            }
         }
 
-        // 第二关：事实验证
-        FactCheckResult factCheck = verifyAnswer(rawAnswer, chunks);
-
-        if (factCheck.cleanedAnswer() == null || factCheck.cleanedAnswer().isBlank()) {
-            return rawAnswer;
+        // 第三关
+        if (skipC3) {
+            log.info("[幻觉-第三关] 策略跳过: skipCheckpoints={}", skipCheckpoints);
+            return factChecked;
         }
-
-        // 第三关：引用追溯
-        String citedAnswer = traceCitations(factCheck.cleanedAnswer(), chunks);
-
-        return citedAnswer;
+        return traceCitations(factChecked, chunks);
     }
 
     // ==================== 辅助方法 ====================

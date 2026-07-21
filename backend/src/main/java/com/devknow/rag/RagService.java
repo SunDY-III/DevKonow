@@ -12,9 +12,13 @@ import com.devknow.knowledge.DocumentChunkRepository;
 import com.devknow.knowledge.graph.GraphExpander;
 import com.devknow.knowledge.graph.GraphRelationResult;
 import com.devknow.knowledge.graph.KnowledgeGraphService;
+import com.devknow.rag.strategy.ChunkStrategy;
+import com.devknow.rag.strategy.RagStrategyRouter;
 import com.devknow.vector.ScoredChunk;
 import com.devknow.vector.VectorStoreService;
 import dev.langchain4j.model.embedding.EmbeddingModel;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -24,6 +28,12 @@ import org.springframework.stereotype.Service;
 import java.util.*;
 import java.util.stream.Collectors;
 
+/**
+ * RAG 检索服务 —— 层级感知 + 策略驱动。
+ *
+ * <p>通过 {@link RagStrategyRouter} 按场景加载 {@link ChunkStrategy}，
+ * 控制 HyDE / MMR / 检查点掩码 / Cross-encoder 权重 / 候选池大小等参数。
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -46,6 +56,7 @@ public class RagService {
     private final LevelClassifier levelClassifier;
     private final RoleLevelMapper roleLevelMapper;
     private final UserRepository userRepository;
+    private final RagStrategyRouter strategyRouter;
 
     @Value("${app.rag.vector-top-k}")  private int vectorTopK;
     @Value("${app.rag.keyword-top-k}") private int keywordTopK;
@@ -78,11 +89,10 @@ public class RagService {
             case 5:  baseLambda = 0.85; break;
             default: baseLambda = 0.60;
         }
-        // 置信度调节
         if (confidence < 0.5) {
-            baseLambda -= 0.10; // 低置信 → 扩多样性，多捞候选给 LLM 判断
+            baseLambda -= 0.10;
         } else if (confidence > 0.8) {
-            baseLambda += 0.10; // 高置信 → 聚焦相关，减少噪声
+            baseLambda += 0.10;
         }
         return Math.max(0.3, Math.min(0.95, baseLambda));
     }
@@ -102,7 +112,6 @@ public class RagService {
                 if (!related.isEmpty()) {
                     Map<Long, Integer> relatedWithHops = new HashMap<>();
                     for (GraphRelationResult r : related) {
-                        // 取最短跳数（多个路径时最短的优先）
                         Long relatedDocId = r.getDocId();
                         int hops = r.getHops();
                         relatedWithHops.merge(relatedDocId, hops, Math::min);
@@ -116,6 +125,8 @@ public class RagService {
         return relationMap;
     }
 
+    // ==================== 公共接口 ====================
+
     public float[] embed(Long userId, String text) {
         float[] v = embeddingModel.embed(text).content().vector();
         tokenAuditService.record(userId, "EMBEDDING", text.length() / 2, 0);
@@ -126,13 +137,6 @@ public class RagService {
         return retrieveCode(userId, null, question);
     }
 
-    /**
-     * 代码检索通道，支持按项目隔离。
-     *
-     * @param userId    用户 ID
-     * @param projectId 项目 ID（null 时默认全量搜索）
-     * @param question  查询问题
-     */
     public List<ScoredChunk> retrieveCode(Long userId, Long projectId, String question) {
         float[] queryVector = embed(userId, question);
         String codePrefix = projectId != null
@@ -154,20 +158,44 @@ public class RagService {
         return sb.toString();
     }
 
-    // ==================== 层级感知检索 ====================
+    // ==================== 层级感知检索（策略驱动） ====================
 
+    /**
+     * 层级感知检索，使用默认场景（"doc" 精准模式）。
+     */
     public RagResult levelAwareRetrieve(Long userId, String question) {
-        return levelAwareRetrieve(userId, null, question);
+        return levelAwareRetrieve(userId, null, question, "doc");
     }
 
     /**
-     * 层级感知检索（A+B 混合 + MMR + 同义词扩展）。
-     *
-     * @param userId    用户 ID
-     * @param projectId 项目 ID（代码检索用，可为 null）
-     * @param question  用户问题
+     * 层级感知检索，使用默认场景（"doc" 精准模式）。
      */
     public RagResult levelAwareRetrieve(Long userId, Long projectId, String question) {
+        return levelAwareRetrieve(userId, projectId, question, "doc");
+    }
+
+    /**
+     * 层级感知检索，按场景策略路由参数。
+     *
+     * <p>场景策略控制：
+     * <ul>
+     *   <li>HyDE 是否启用（学习场景关闭）</li>
+     *   <li>MMR 是否启用（代码场景关闭）</li>
+     *   <li>候选池大小（学习场景扩大 2 倍）</li>
+     *   <li>Cross-encoder 融合权重（学习场景 0.5，默认 0.7）</li>
+     *   <li>检查点跳过掩码（学习场景跳过 C1+C2）</li>
+     *   <li>向量 TopK / 关键词 TopK</li>
+     * </ul>
+     *
+     * @param userId    用户 ID
+     * @param projectId 项目 ID（可为 null）
+     * @param question  用户问题
+     * @param scenario  场景名称（learn / interview / safety / code / doc / default）
+     */
+    public RagResult levelAwareRetrieve(Long userId, Long projectId, String question, String scenario) {
+        long startNanos = System.nanoTime();
+        ChunkStrategy strategy = strategyRouter.resolve(scenario);
+
         UserKnowledgeRole userRole = getUserKnowledgeRole(userId);
 
         LevelResult levelResult = levelClassifier.classify(question);
@@ -179,17 +207,26 @@ public class RagService {
         double confidence = plan.getAdjustedConfidence();
         boolean needRouteB = plan.isNeedRouteB();
 
-        // 步骤 3.5: HyDE — 生成假设文档提升检索召回
-        String hydeQuery = hydeGenerator.generateHypothesis(question);
+        int effectiveVectorTopK = strategy.getVectorTopK();
+        int effectiveKeywordTopK = strategy.getKeywordTopK();
 
-        // 步骤 4: 向量搜索（A 路）— 使用 HyDE 增强后的查询
+        // ========== 步骤 1: HyDE ==========
+        String hydeQuery;
+        if (strategy.isHydeEnabled()) {
+            hydeQuery = hydeGenerator.generateHypothesis(question);
+        } else {
+            hydeQuery = question;
+            log.debug("HyDE 已禁用（scenario={}），使用原始查询", scenario);
+        }
+
+        // ========== 步骤 2: 向量搜索 ==========
         float[] queryVector = embed(userId, hydeQuery);
-        List<ScoredChunk> vectorHits = new ArrayList<>(vectorStoreService.searchByLevels(queryVector, vectorTopK, searchLevels));
+        List<ScoredChunk> vectorHits = new ArrayList<>(vectorStoreService.searchByLevels(queryVector, effectiveVectorTopK, searchLevels));
         for (ScoredChunk c : vectorHits) c.setSource("");
 
-        // 步骤 4-B: 角色补刀
+        // ========== 步骤 3: 角色补刀（B 路） ==========
         if (needRouteB) {
-            List<ScoredChunk> backupHits = vectorStoreService.searchByLevels(queryVector, vectorTopK,
+            List<ScoredChunk> backupHits = vectorStoreService.searchByLevels(queryVector, effectiveVectorTopK,
                     new int[]{targetLevel});
             for (ScoredChunk c : backupHits) {
                 c.setScore(c.getScore() * 0.6);
@@ -202,25 +239,22 @@ public class RagService {
             }
         }
 
-        // 步骤 5: 关键词搜索 + 同义词扩展
+        // ========== 步骤 4: 关键词搜索 + 同义词扩展 ==========
         List<String> expandedTerms = queryExpander.expand(question);
         String expandedQuery = String.join(" ", expandedTerms);
 
         List<Integer> levelList = new ArrayList<>();
         for (int l : searchLevels) levelList.add(l);
-        List<DocumentChunk> kwRaw = chunkRepository.keywordSearchByLevel(expandedQuery, levelList, keywordTopK);
+        List<DocumentChunk> kwRaw = chunkRepository.keywordSearchByLevel(expandedQuery, levelList, effectiveKeywordTopK);
         List<ScoredChunk> keywordHits = kwRaw.stream()
                 .map(c -> new ScoredChunk(c.getId(), c.getDocId(), c.getSeq(), "", c.getContent(), 0.0, "keyword"))
                 .toList();
 
-        // 步骤 6: RRF 融合
+        // ========== 步骤 5: RRF 融合 ==========
         List<ScoredChunk> fused = RrfFusion.fuse(vectorHits, keywordHits, rrfK);
 
-        // 步骤 7: 图感知 MMR 多样性去重
-        //   — 候选池动态计算（rerankTopN × 4，至少 20）
-        //   — λ 根据问题层级 + 置信度自适应调节
-        //   — pairSim 考虑知识图谱中文档关联关系，保留互补信息
-        int candidatePoolSize = Math.max(rerankTopN * 4, 20);
+        // ========== 步骤 6: MMR 多样性去重（可配置开关和候选池大小） ==========
+        int candidatePoolSize = strategy.candidatePoolSize();
         List<ScoredChunk> candidates = fused.size() > candidatePoolSize
                 ? fused.subList(0, candidatePoolSize)
                 : fused;
@@ -228,28 +262,37 @@ public class RagService {
         Map<String, float[]> vectorMap = vectorStoreService.retrieveVectors(
                 candidates.stream().map(ScoredChunk::getChunkId).collect(Collectors.toList()));
 
-        double adaptiveLambda = computeAdaptiveLambda(targetLevel, confidence);
-        Map<Long, Set<Long>> graphRelationMap = buildGraphRelationMap(candidates, 2);
+        List<ScoredChunk> diverse;
+        if (strategy.isMmrEnabled()) {
+            double adaptiveLambda = computeAdaptiveLambda(targetLevel, confidence);
+            Map<Long, Map<Long, Integer>> graphRelationMap = buildGraphRelationMap(candidates, 2);
+            diverse = mmrSelector.select(
+                    queryVector, candidates,
+                    (docId, chunkId) -> vectorMap.get(String.valueOf(chunkId)),
+                    adaptiveLambda, strategy.getRerankTopN(), graphRelationMap);
+        } else {
+            // MMR 关闭时直接取 TopN
+            diverse = candidates.stream()
+                    .sorted(Comparator.comparingDouble(ScoredChunk::getScore).reversed())
+                    .limit(strategy.getRerankTopN())
+                    .toList();
+            log.debug("MMR 已禁用（scenario={}），按原始分数取 TopN={}", scenario, strategy.getRerankTopN());
+        }
 
-        List<ScoredChunk> diverse = mmrSelector.select(
-                queryVector, candidates,
-                (docId, chunkId) -> vectorMap.get(String.valueOf(chunkId)),
-                adaptiveLambda, rerankTopN, graphRelationMap);
-
-        // 步骤 8: 代码结构感知重排序 + Cross-encoder 精排 + 图谱扩展
-        List<ScoredChunk> topN = reranker.rerank(question, diverse, rerankTopN, projectId);
-        List<ScoredChunk> ceRanked = crossEncoderReranker.rerank(question, topN, rerankTopN);
+        // ========== 步骤 7: 重排 + Cross-encoder + 图谱扩展 ==========
+        List<ScoredChunk> topN = reranker.rerank(question, diverse, strategy.getRerankTopN(), projectId);
+        List<ScoredChunk> ceRanked = crossEncoderReranker.rerank(
+                question, topN, strategy.getRerankTopN(), strategy.getCrossEncoderWeight());
         List<ScoredChunk> expanded = graphExpander.expand(ceRanked, 3, 2);
 
-        // 步骤 9: CRAG 纠错评估 — 评估检索质量，触发补搜或降级
+        // ========== 步骤 8: CRAG 纠错评估 ==========
         confidence = calculateConfidence(vectorHits, keywordHits, fused, confidence);
         CorrectiveEvaluator.EvaluationResult cragResult = correctiveEvaluator.evaluate(
                 expanded, question,
                 originalResults -> {
-                    // 补搜策略：放宽层级范围 + 扩大候选池
                     int[] broaderLevels = new int[]{1, 2, 3, 4, 5};
                     float[] retryVector = embed(userId, question);
-                    List<ScoredChunk> retryHits = vectorStoreService.searchByLevels(retryVector, vectorTopK * 2, broaderLevels);
+                    List<ScoredChunk> retryHits = vectorStoreService.searchByLevels(retryVector, effectiveVectorTopK * 2, broaderLevels);
                     if (!retryHits.isEmpty()) {
                         for (ScoredChunk c : retryHits) c.setSource("retry");
                     }
@@ -260,16 +303,25 @@ public class RagService {
                 ? List.of()
                 : cragResult.chunks();
 
-        // 步骤 10: 幻觉第一关 — LLM 逐条过滤不相关的 chunk
-        List<ScoredChunk> finalChunks = !cragChunks.isEmpty()
-                ? hallucinationGuard.executeCheckpoint1(question, cragChunks)
-                : cragChunks;
+        // ========== 步骤 9: 幻觉第一关（策略感知检查点掩码） ==========
+        List<ScoredChunk> finalChunks;
+        if (!cragChunks.isEmpty()) {
+            finalChunks = hallucinationGuard.executeCheckpoint1(
+                    question, cragChunks, confidence, strategy.getSkipCheckpoints());
+        } else {
+            finalChunks = cragChunks;
+        }
 
-        log.info("levelAwareRetrieve: q={}, role={}, level={}, conf={}, A_hits={}, B={}, CRAG={}, MMR(lambda={})={}/{}, pool={}, graphRelated={}, expanded={}, H1_filtered={}",
-                question, userRole, targetLevel, String.format("%.2f", confidence),
-                vectorHits.size(), needRouteB, cragResult.verdict(), String.format("%.2f", adaptiveLambda),
-                diverse.size(), candidates.size(), candidatePoolSize,
-                graphRelationMap.size(), expanded.size() - topN.size());
+        long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
+        log.info("levelAwareRetrieve: q={}, scenario={}, role={}, level={}, conf={}, "
+                        + "vector={}, keyword={}, HyDE={}, MMR={}, pool={}, rerankTopN={}, "
+                        + "CEweight={}, skipCheckpoints={}, final={}, elapsed={}ms",
+                question, scenario, userRole, targetLevel, String.format("%.2f", confidence),
+                vectorHits.size(), keywordHits.size(),
+                strategy.isHydeEnabled(), strategy.isMmrEnabled(),
+                candidatePoolSize, strategy.getRerankTopN(),
+                strategy.getCrossEncoderWeight(), strategy.getSkipCheckpoints(),
+                finalChunks.size(), elapsedMs);
 
         return new RagResult(finalChunks, confidence);
     }
@@ -297,14 +349,12 @@ public class RagService {
             topScore = 0.5;
         }
 
-        // 分差因子：第 1 名比第 2 名高越多越可信
         double gapFactor = 1.0;
         if (vectorHits.size() >= 2) {
             double gap = vectorHits.get(0).getScore() - vectorHits.get(1).getScore();
             gapFactor = Math.min(1.2, 1.0 + gap * 2);
         }
 
-        // 关键词确认率
         double confirmRate = 1.0;
         if (!vectorHits.isEmpty() && !keywordHits.isEmpty()) {
             Set<Long> kwIds = keywordHits.stream()
@@ -319,9 +369,7 @@ public class RagService {
             }
         }
 
-        // 融合
         double finalConf = topScore * gapFactor * confirmRate;
-        // 融合角色调整
         finalConf = Math.min(1.0, finalConf * 0.8 + roleAdjusted * 0.2);
 
         return Math.round(finalConf * 10000.0) / 10000.0;

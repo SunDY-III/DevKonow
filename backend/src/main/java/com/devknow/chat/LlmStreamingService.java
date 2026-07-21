@@ -58,8 +58,23 @@ public class LlmStreamingService {
                                      float[] queryVector) throws Exception {
         String context = ragService.buildContext(rag.getChunks());
 
-        List<ChatMessage> messages = new ArrayList<>();
-        messages.add(SystemMessage.from("""
+        // 如果 chunks 包含方法级结构化上下文（格式含【方法】/【类】/【签名】等），
+        // buildContext 保留原始结构化内容，不扁平化覆盖
+        boolean isMethodLevel = context.contains("【方法】") || context.contains("【签名】");
+
+        String systemPrompt = isMethodLevel
+                ? ("""
+                你是资深开发者代码助手。请基于下方检索到的方法级代码上下文回答用户的问题。
+                回答规则：
+                1. 优先使用【方法体】中的完整代码来分析逻辑；
+                2. 给出具体的文件名、类名、方法名和行号；
+                3. 解释逻辑时附上调用链分析（谁调了谁）；
+                4. 引用格式：【方法】类名.方法名 或 【文件】文件名:行号；
+                5. 如果代码片段不足以回答，请明确说明缺什么信息；
+                6. 涉及历史故障或相关提交时请一并指出。
+                ===== 检索到的代码上下文 =====
+                """ + context)
+                : ("""
                 你是资深开发者代码助手。请基于下方代码片段和知识库内容回答用户的问题。
                 回答规则：
                 1. 给出具体的文件名、方法名、行号；
@@ -69,7 +84,10 @@ public class LlmStreamingService {
                 5. 涉及历史故障或相关提交时请一并指出；
                 6. 如果检索到的代码缺乏注释、命名不规范或有拼音命名，请根据上下文和代码逻辑推测其功能并在回答中说明。
                 ===== 检索到的内容 =====
-                """ + context));
+                """ + context);
+
+        List<ChatMessage> messages = new ArrayList<>();
+        messages.add(SystemMessage.from(systemPrompt));
         messages.addAll(memoryService.load(conversationId));   // 多轮记忆
         UserMessage userMessage = UserMessage.from(question);
         messages.add(userMessage);

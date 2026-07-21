@@ -41,14 +41,22 @@ public class CrossEncoderReranker {
     }
 
     /**
-     * Cross-encoder 重排序入口。
-     *
-     * @param query     用户查询
-     * @param candidates 候选列表（来自 MMR 或特征重排）
-     * @param topN      截断数
-     * @return 重排序后的 TopN
+     * Cross-encoder 重排序入口（默认融合权重 0.7）。
      */
     public List<ScoredChunk> rerank(String query, List<ScoredChunk> candidates, int topN) {
+        return rerank(query, candidates, topN, 0.7);
+    }
+
+    /**
+     * Cross-encoder 重排序入口（支持动态融合权重）。
+     *
+     * @param query        用户查询
+     * @param candidates   候选列表（来自 MMR 或特征重排）
+     * @param topN         截断数
+     * @param fusionWeight Cross-encoder 分融合权重；最终分 = crossScore × fusionWeight + originalScore × (1-fusionWeight)
+     * @return 重排序后的 TopN
+     */
+    public List<ScoredChunk> rerank(String query, List<ScoredChunk> candidates, int topN, double fusionWeight) {
         if (candidates == null || candidates.isEmpty()) return List.of();
         if (candidates.size() <= 1) return candidates;
 
@@ -56,15 +64,16 @@ public class CrossEncoderReranker {
 
         try {
             // 批量 LLM 评分
-            List<ScoredChunk> scored = batchScore(query, candidates);
+            List<ScoredChunk> scored = batchScore(query, candidates, fusionWeight);
             List<ScoredChunk> result = scored.stream()
                     .sorted(Comparator.comparingDouble(ScoredChunk::getScore).reversed())
                     .limit(topN)
                     .toList();
 
-            log.info("cross-encoder rerank: candidates={}, result={}, topScore={:.4f},耗时={}ms",
+            log.info("cross-encoder rerank: candidates={}, result={}, topScore={:.4f}, fusionWeight={}, 耗时={}ms",
                     candidates.size(), result.size(),
                     result.isEmpty() ? 0 : result.get(0).getScore(),
+                    fusionWeight,
                     System.currentTimeMillis() - start);
             return result;
 
@@ -78,9 +87,17 @@ public class CrossEncoderReranker {
     }
 
     /**
-     * 批量评分：将 candidates 分批次，每批构造一个 prompt 让 LLM 打分。
+     * 批量评分（默认融合权重 0.7）。
      */
     private List<ScoredChunk> batchScore(String query, List<ScoredChunk> candidates) {
+        return batchScore(query, candidates, 0.7);
+    }
+
+    /**
+     * 批量评分：将 candidates 分批次，每批构造一个 prompt 让 LLM 打分。
+     * 使用指定的融合权重合成最终分。
+     */
+    private List<ScoredChunk> batchScore(String query, List<ScoredChunk> candidates, double fusionWeight) {
         List<ScoredChunk> result = new ArrayList<>(candidates.size());
 
         for (int batchStart = 0; batchStart < candidates.size(); batchStart += BATCH_SIZE) {
@@ -92,8 +109,8 @@ public class CrossEncoderReranker {
                 for (int i = 0; i < batch.size(); i++) {
                     double originalScore = batch.get(i).getScore();
                     double crossScore = scores.get(i);
-                    // 融合：cross-encoder 分占 0.7，原始分 0.3
-                    double fused = crossScore * 0.7 + originalScore * 0.3;
+                    // 融合：cross-encoder 分 × fusionWeight + 原始分 × (1-fusionWeight)
+                    double fused = crossScore * fusionWeight + originalScore * (1.0 - fusionWeight);
                     result.add(new ScoredChunk(
                             batch.get(i).getChunkId(),
                             batch.get(i).getDocId(),

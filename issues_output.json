@@ -1,0 +1,74 @@
+{"issues": [
+  {
+    "file": "backend/src/main/java/com/devknow/rag/RagService.java",
+    "severity": "P0",
+    "description": "levelAwareRetrieve line 562-564: variable self-reference. cragChunks initializer references itself in the false branch (: cragChunks), which yields null when CRAG verdict is not LOW_CONFIDENCE. Line 566 !cragChunks.isEmpty() will throw NPE.",
+    "fix": "Change line 564 ': cragChunks' to ': cragResult.chunks()'"
+  },
+  {
+    "file": "backend/src/main/java/com/devknow/rag/RagService.java",
+    "severity": "P1",
+    "description": "levelAwareRetrieve line 538: buildGraphRelationMap(candidates, 2) return value discarded. mmrSelector.select on line 543 passes null as graphRelatedDocIds, disabling graph-aware MMR entirely.",
+    "fix": "Capture return value: Map<Long, Map<Long, Integer>> graphRelated = buildGraphRelationMap(candidates, 2); then pass graphRelated to mmrSelector.select call on line 543"
+  },
+  {
+    "file": "backend/src/main/java/com/devknow/rag/RagService.java",
+    "severity": "P2",
+    "description": "CRAG retry callback in levelAwareRetrieve line 554 uses embed(userId, question) instead of the hydeQuery variable, causing inconsistent semantic spaces between main retrieval and corrective retry.",
+    "fix": "Replace question with hydeQuery in the retry callback closure"
+  },
+  {
+    "file": "backend/src/main/java/com/devknow/rag/CrossEncoderReranker.java",
+    "severity": "P2",
+    "description": "Constructor parameter modelName (@Value app.rag.cross-encoder.model) is injected but never stored or used. Dead configuration.",
+    "fix": "Remove unused modelName parameter and @Value annotation"
+  },
+  {
+    "file": "frontend/src/views/ChatView.vue",
+    "severity": "P2",
+    "description": "LlmStreamingService emits corrected event (for hallucination-checked answers) but ChatView has no event listener for 'corrected'. Users never see the corrected version.",
+    "fix": "Add: es.addEventListener('corrected', (e) => { const last = messages.value[messages.value.length-1]; if (last?.role==='assistant') last.content = e.data; })"
+  },
+  {
+    "file": "backend/src/main/java/com/devknow/codereview/CodeTools.java",
+    "severity": "P2",
+    "description": "ThreadLocal leak: invoked and rounds fields use beginSession/endSession pattern but exceptions in tool handlers can skip endSession, accumulating ThreadLocal entries across async requests.",
+    "fix": "Use try-finally to ensure endSession runs; or clean up in request-scoped interceptor"
+  },
+  {
+    "file": "backend/src/main/java/com/devknow/rag/HallucinationGuard.java",
+    "severity": "P2",
+    "description": "traceCitations deepModel call shares default chat-timeout (60s) which may be insufficient for large source documents. Source truncation at 10000 chars ignores actual token budget.",
+    "fix": "Configure a dedicated longer timeout for deepModel; truncate by token count instead of char count"
+  },
+  {
+    "file": "backend/src/test/java/com/devknow/rag/RagEvaluator.java",
+    "severity": "P2",
+    "description": "Test coverage gap: no test covers the cragChunks NPE path in levelAwareRetrieve, and no integration test for the full methodLevelRetrieve pipeline.",
+    "fix": "Add unit tests for levelAwareRetrieve with CRAG non-LOW_CONFIDENCE path; add integration test for methodLevelRetrieve"
+  },
+  {
+    "file": "backend/src/main/java/com/devknow/rag/CorrectiveEvaluator.java",
+    "severity": "P3",
+    "description": "filterNoise discards low-score chunks with max*0.3 threshold but does not log the count of filtered results, making quality degradation invisible in monitoring.",
+    "fix": "Log filtered chunk count in filterNoise or expose via MeterRegistry gauge"
+  },
+  {
+    "file": "backend/src/main/resources/application.yml",
+    "severity": "P3",
+    "description": "SemanticCacheService code default threshold is 0.92 but application.yml sets 0.95. Code comment says 'threshold 0.92 conservative' which is inaccurate for deployed config.",
+    "fix": "Align either the code default or the yml value; update the comment to match the actual threshold in use"
+  },
+  {
+    "file": "backend/src/main/java/com/devknow/codeindex/CodeIndexModeService.java",
+    "severity": "P3",
+    "description": "currentProjectDir is a plain String field written by setCurrentProjectDir without synchronization. Concurrent switchMode calls may race.",
+    "fix": "Replace with AtomicReference<String> or add synchronized keyword"
+  },
+  {
+    "file": "backend/src/main/java/com/devknow/config/rerank/LevelClassifier.java",
+    "severity": "P3",
+    "description": "LLM call in classify() uses default timeout; if the model hangs the thread blocks indefinitely. Should have a configurable timeout.",
+    "fix": "Implement CompletableFuture with timeout or ensure chat-timeout-seconds applies to this call path"
+  }
+]}

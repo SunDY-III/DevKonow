@@ -34,12 +34,12 @@ import static io.qdrant.client.VectorsFactory.vectors;
  * <p>查找使用 Qdrant 近似度搜索替代 Redis SCAN 全量遍历：将缓存的 query 向量存入 Qdrant
  * <code>cache_vectors</code> collection，查找时走 ANN 索引 O(log n)，而非 SCAN O(n)。
  *
- * <p>阈值 0.92（偏保守）：宁可漏命中走一次 LLM，也不要误命中答非所问。
+ * <p>阈值 0.95（偏保守）：宁可漏命中走一次 LLM，也不要误命中答非所问。
  * Cache-Aside 模式：写入时 500ms 异步回填，不阻塞主流程。
  *
  * <p>三个设计点（面试点）：
  * <ol>
- *   <li>阈值 0.92：比默认 0.95 略宽松，提升命中率同时保持准确；</li>
+ *   <li>阈值 0.95：偏保守策略，降低误命中率；</li>
  *   <li>Cache-Aside 异步写入：主流程不等待缓存回填，500ms 超时后降级；</li>
  *   <li>失效联动：缓存条目记录其依据的 docId 列表，知识库按文档维度变更时定向清除，
  *       避免"文档已更新、缓存还在答旧内容"。</li>
@@ -58,7 +58,7 @@ public class SemanticCacheService {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final QdrantClientManager qdrantManager;
 
-    @Value("${app.semantic-cache.threshold:0.92}") private double threshold;
+    @Value("${app.semantic-cache.threshold:0.95}") private double threshold;
     @Value("${app.semantic-cache.ttl-hours}") private long ttlHours;
 
     @Data
