@@ -67,3 +67,11 @@ export function scoreCodeQuality(code, language, context) {
 export function getProgressOverview() {
   return request('/study/progress-overview')
 }
+
+// 安全审查
+export function reviewCodeRange(projectId, filePath, startLine, endLine) {
+  return request('/study/safety/review-range', {
+    method: 'POST',
+    body: JSON.stringify({ projectId, filePath, startLine, endLine })
+  })
+}

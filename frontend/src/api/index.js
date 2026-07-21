@@ -78,5 +78,5 @@ export { createFeynmanSSE, submitFeynmanAnswer, skipFeynman } from './feynman.js
 export {
   createExtractSSE, getKnowledgePoints, getSkillTree, getStudyStats,
   generateInterviewQuestions, generateFollowUp, generateFeedback,
-  scoreCodeQuality, getProgressOverview
+  scoreCodeQuality, getProgressOverview, reviewCodeRange
 } from './study.js'

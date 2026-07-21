@@ -51,9 +51,10 @@
             <div class="msg-content" v-html="renderContent(msg.content)" />
             <div v-if="msg.sources && msg.sources.length" class="msg-sources">
               <span class="sources-label">来源</span>
-              <span v-for="(src, j) in msg.sources" :key="j" class="source-chip">
+              <span v-for="(src, j) in msg.sources" :key="j" class="source-chip" style="cursor:pointer" @click="reviewSource(src, msg)">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                 {{ src.file }}#{{ src.seq }}
+                <span class="review-badge">🔒</span>
               </span>
             </div>
             <!-- Feynman 检验入口 -->
@@ -74,6 +75,12 @@
               :answer="msg.content"
               @skip="msg.showFeynman = false"
               @complete="onFeynmanComplete(msg, $event)"
+            />
+            <!-- 安全审查报告 -->
+            <SafetyReport
+              v-if="msg.safetyReport"
+              :report="msg.safetyReport"
+              :loading="msg.safetyLoading"
             />
           </div>
         </div>
@@ -112,6 +119,7 @@ import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { useProjectStore } from '../stores/useProjectStore.js'
 import FeynmanPanel from '../components/FeynmanPanel.vue'
+import SafetyReport from '../components/SafetyReport.vue'
 
 const route = useRoute()
 const projectStore = useProjectStore()
@@ -184,6 +192,32 @@ async function extractKnowledge(msg, index) {
     msg.extractError = err.message
   } finally {
     msg.extracting = false
+  }
+}
+
+import { reviewCodeRange } from '../api/index.js'
+
+async function reviewSource(src, msg) {
+  if (msg.safetyLoading) return
+  msg.safetyLoading = true
+  msg.safetyReport = null
+  try {
+    const filePath = src.file
+    const seq = src.seq || 1
+    const result = await reviewCodeRange(
+      currentProjectId.value || null,
+      filePath, seq, seq + 10
+    )
+    msg.safetyReport = result.data || result
+  } catch (err) {
+    msg.safetyReport = {
+      passed: false,
+      summary: '审查失败: ' + err.message,
+      score: 0, issues: [],
+      reviewedFile: src.file
+    }
+  } finally {
+    msg.safetyLoading = false
   }
 }
 
