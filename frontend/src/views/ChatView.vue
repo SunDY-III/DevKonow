@@ -118,6 +118,7 @@
 import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { useProjectStore } from '../stores/useProjectStore.js'
+import { useSSE } from '../composables/useSSE.js'
 import FeynmanPanel from '../components/FeynmanPanel.vue'
 import SafetyReport from '../components/SafetyReport.vue'
 import { reviewCodeRange } from '../api/index.js'
@@ -136,7 +137,7 @@ const fromCache = ref(false)
 const messageList = ref(null)
 const searchInput = ref(null)
 
-let es = null
+let sse = null
 const conversationId = ref(Date.now().toString())
 
 function startFeynman(msg, index) {
@@ -237,12 +238,6 @@ onMounted(async () => {
   }
 })
 
-// SSE 重连状态
-let reconnectTimer = null
-let retryCount = 0
-const maxRetries = 3
-let lastSSEParams = null
-
 async function send() {
   const q = question.value.trim()
   if (!q || loading.value) return
@@ -253,17 +248,57 @@ async function send() {
   currentStep.value = ''
   fromCache.value = false
 
-  const params = new URLSearchParams({
-    question: q,
-    conversationId: Date.now().toString()
-  })
-  if (currentProjectId.value) params.set('projectId', currentProjectId.value)
-  const token = localStorage.getItem('auth_token')
-  if (token) params.set('token', token)
+  // 关闭之前的连接
+  if (sse) sse.close()
 
-  lastSSEParams = params
-  es = new EventSource(`/api/chat/stream?${params}`)
-  bindSSEEvents(es)
+  let answer = ''
+
+  sse = useSSE('/api/chat/stream', {
+    token(data) {
+      answer += data
+      const last = messages.value[messages.value.length - 1]
+      if (last?.role === 'assistant') {
+        last.content = answer
+      } else {
+        messages.value.push({ role: 'assistant', content: answer, sources: [] })
+      }
+      scrollToBottom()
+    },
+    source(data) {
+      try {
+        const sources = JSON.parse(data)
+        const last = messages.value[messages.value.length - 1]
+        if (last?.role === 'assistant') last.sources = sources
+      } catch {}
+    },
+    route(data) { currentRoute.value = data },
+    phase(data) { currentRoute.value = data },
+    step(data) { currentStep.value = data },
+    cache(data) { fromCache.value = data === 'true' },
+    corrected(data) {
+      const last = messages.value[messages.value.length - 1]
+      if (last?.role === 'assistant') { last.content = data }
+      scrollToBottom()
+    },
+    done() {
+      loading.value = false
+      scrollToBottom()
+      const last = messages.value[messages.value.length - 1]
+      if (last?.role === 'assistant') last.completed = true
+    },
+    onerror() {
+      loading.value = false
+    }
+  }, {
+    params: {
+      question: q,
+      conversationId: Date.now().toString(),
+      ...(currentProjectId.value ? { projectId: currentProjectId.value } : {})
+    },
+    autoReconnect: true
+  })
+
+  sse.connect()
 
   // 幻觉校正：LlmStreamingService 发来的修正后答案
   es.addEventListener('corrected', (e) => {
@@ -272,64 +307,6 @@ async function send() {
       last.content = e.data
     }
     scrollToBottom()
-  })
-}
-
-/** SSE 事件绑定（支持断线后重绑） */
-function bindSSEEvents(es) {
-  let answer = ''
-
-  es.addEventListener('token', (e) => {
-    answer += e.data
-    const last = messages.value[messages.value.length - 1]
-    if (last?.role === 'assistant') {
-      last.content = answer
-    } else {
-      messages.value.push({ role: 'assistant', content: answer, sources: [] })
-    }
-    scrollToBottom()
-  })
-
-  es.addEventListener('source', (e) => {
-    try {
-      const sources = JSON.parse(e.data)
-      const last = messages.value[messages.value.length - 1]
-      if (last?.role === 'assistant') last.sources = sources
-    } catch {}
-  })
-
-  es.addEventListener('route', (e) => { currentRoute.value = e.data })
-  es.addEventListener('phase', (e) => { currentRoute.value = e.data })
-  es.addEventListener('step', (e) => { currentStep.value = e.data })
-  es.addEventListener('cache', (e) => { fromCache.value = e.data === 'true' })
-
-  es.addEventListener('done', () => {
-    es.close(); loading.value = false; scrollToBottom()
-    retryCount = 0
-    const last = messages.value[messages.value.length - 1]
-    if (last?.role === 'assistant') last.completed = true
-  })
-
-  es.addEventListener('corrected', (e) => {
-    const last = messages.value[messages.value.length - 1]
-    if (last?.role === 'assistant') {
-      last.content = e.data
-    }
-    scrollToBottom()
-  })
-
-  es.addEventListener('error', () => {
-    es.close(); loading.value = false
-    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
-    // 指数退避重连
-    if (lastSSEParams && retryCount < maxRetries) {
-      retryCount++
-      const delay = Math.min(30000, 1000 * Math.pow(2, retryCount - 1))
-      reconnectTimer = setTimeout(() => {
-        es = new EventSource(`/api/chat/stream?${lastSSEParams}`)
-        bindSSEEvents(es)
-      }, delay)
-    }
   })
 }
 
@@ -350,7 +327,7 @@ function renderContent(text) {
     .replace(/\[片段(\d+)\]/g, '<span class="code-ref">📎 [$1]</span>')
 }
 
-onUnmounted(() => { if (es) es.close() })
+onUnmounted(() => { if (sse) sse.close() })
 </script>
 
 <style scoped>

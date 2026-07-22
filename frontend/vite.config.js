@@ -18,6 +18,22 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    assetsDir: 'assets'
+    assetsDir: 'assets',
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          // 将 Vue 生态库打包为独立 chunk，利用浏览器缓存
+          if (id.includes('node_modules/vue')) {
+            return 'vendor-vue'
+          }
+          if (id.includes('node_modules/pinia')) {
+            return 'vendor-vue'
+          }
+          if (id.includes('node_modules/vue-router')) {
+            return 'vendor-vue'
+          }
+        }
+      }
+    }
   }
 })
