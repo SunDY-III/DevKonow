@@ -18,6 +18,11 @@ public interface TokenUsageLogRepository extends JpaRepository<TokenUsageLog, Lo
             """)
     List<DailyUsage> aggregate(@Param("start") LocalDateTime start, @Param("end") LocalDateTime end);
 
+    /** 查单用户自某个时间点起的 Token 总消耗 */
+    @Query("select coalesce(sum(l.inputTokens + l.outputTokens), 0) from TokenUsageLog l " +
+           "where l.userId = :userId and l.createdAt >= :since")
+    long sumByUserSince(@Param("userId") Long userId, @Param("since") LocalDateTime since);
+
     interface DailyUsage {
         Long getUserId();
         String getScene();

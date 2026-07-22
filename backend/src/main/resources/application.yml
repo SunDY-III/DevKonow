@@ -118,6 +118,8 @@ app:
     user-capacity: 20
     api-capacity: 200
     window-seconds: 60
+  token-budget:
+    daily-per-user: ${TOKEN_BUDGET_DAILY_USER:0}  # 单用户每日 Token 预算上限（0 不限制）
   agent:
     max-tool-rounds: 6
   project:

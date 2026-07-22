@@ -2,6 +2,7 @@ package com.devknow.governance;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -22,8 +23,20 @@ public class TokenAuditService {
 
     private final TokenUsageLogRepository repository;
 
+    /** 单用户每日 Token 预算上限（0=不限制） */
+    @Value("${app.token-budget.daily-per-user:0}")
+    private long dailyBudgetPerUser;
+
     @Async
     public void record(Long userId, String scene, Integer inputTokens, Integer outputTokens) {
+        // 预算检查：超出上限则记录警告但不阻塞（仅提示，不中断业务流程）
+        if (dailyBudgetPerUser > 0 && userId != null && userId > 0) {
+            long todayUsage = repository.sumByUserSince(userId, LocalDate.now().atStartOfDay());
+            if (todayUsage + inputTokens + outputTokens > dailyBudgetPerUser) {
+                log.warn("Token 预算超限: userId={}, todayUsage={}, budget={}, new={}+{}",
+                        userId, todayUsage, dailyBudgetPerUser, inputTokens, outputTokens);
+            }
+        }
         try {
             TokenUsageLog logRow = new TokenUsageLog();
             logRow.setUserId(userId == null ? 0L : userId);
