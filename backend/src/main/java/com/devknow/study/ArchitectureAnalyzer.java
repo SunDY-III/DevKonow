@@ -5,6 +5,7 @@ import com.devknow.project.CodeProject;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.chat.request.ChatRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -93,7 +94,11 @@ public class ArchitectureAnalyzer {
         );
 
         try {
-            String response = chatModel.chat(UserMessage.from(prompt)).aiMessage().text();
+            String response = chatModel.chat(
+        ChatRequest.builder()
+            .messages(List.of(UserMessage.from(prompt)))
+            .build())
+        .aiMessage().text();
             String json = extractJson(response);
 
             Map<String, Object> resultMap = objectMapper.readValue(json, Map.class);

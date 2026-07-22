@@ -48,6 +48,11 @@ public interface CodeUnitEntityRepository extends JpaRepository<CodeUnitEntity, 
     void deleteByProjectId(Long projectId);
 
     /**
+     * 按项目 ID 查找所有 CodeUnit。
+     */
+    List<CodeUnitEntity> findByProjectId(Long projectId);
+
+    /**
      * 按文件路径查找 CodeUnit。
      */
     List<CodeUnitEntity> findByProjectIdAndFilePath(Long projectId, String filePath);

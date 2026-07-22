@@ -5,6 +5,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.model.chat.request.ChatRequest;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -161,7 +163,9 @@ public class CrossEncoderReranker {
         String response;
         try {
             response = chatModel.chat(
-                    dev.langchain4j.data.message.UserMessage.from(sb.toString()))
+                    ChatRequest.builder()
+                        .messages(List.of(UserMessage.from(sb.toString())))
+                        .build())
                     .aiMessage().text();
         } catch (Exception e) {
             log.warn("LLM scoring call failed: {}", e.getMessage());

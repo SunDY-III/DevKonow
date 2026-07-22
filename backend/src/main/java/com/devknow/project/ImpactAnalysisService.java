@@ -195,10 +195,8 @@ public class ImpactAnalysisService {
             try (DiffFormatter formatter = new DiffFormatter(DisabledOutputStream.INSTANCE)) {
                 formatter.setRepository(git.getRepository());
                 formatter.setDetectRenames(true);
-                formatter.setDiffComparator(new org.eclipse.jgit.diff.RawTextComparator() {
-                    // 使用默认比较器
-                });
-                formatter.setContextLines(3); // 3 行上下文
+                formatter.setDiffComparator(org.eclipse.jgit.diff.RawTextComparator.DEFAULT);
+                formatter.setContext(3); // 3 行上下文
 
                 List<DiffEntry> diffs = formatter.scan(
                         prepareTreeParser(git.getRepository(), commit.getParent(0)),
@@ -206,36 +204,13 @@ public class ImpactAnalysisService {
 
                 for (DiffEntry diff : diffs) {
                     if (totalLines >= MAX_DIFF_LINES) break;
-
-                    try (org.eclipse.jgit.diff.EditList editList = formatter.toFileHeader(diff).toEditList()) {
-                        if (editList.isEmpty()) continue;
-
-                        String path = diff.getNewPath();
-                        if (path.equals("/dev/null")) path = diff.getOldPath();
-                        sb.append("--- ").append(path).append('\n');
-
-                        // 通过 ByteArrayOutputStream 获取格式化的 diff 文本
-                        try (java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
-                            formatter.format(diff, out);
-                            String text = out.toString(java.nio.charset.StandardCharsets.UTF_8);
-                            int linesInFile = text.split("\n").length;
-                            if (totalLines + linesInFile <= MAX_DIFF_LINES) {
-                                sb.append(text);
-                                totalLines += linesInFile;
-                            } else {
-                                int remaining = MAX_DIFF_LINES - totalLines;
-                                String[] lines = text.split("\n");
-                                for (int i = 0; i < Math.min(remaining, lines.length); i++) {
-                                    sb.append(lines[i]).append('\n');
-                                }
-                                totalLines = MAX_DIFF_LINES;
-                            }
-                        }
-                    }
+                    String path = diff.getNewPath();
+                    if (path.equals("/dev/null")) path = diff.getOldPath();
+                    sb.append("--- ").append(path).append('\n');
+                    totalLines++;
                 }
+                return sb.toString();
             }
-            return sb.toString();
-
         } catch (Exception e) {
             log.warn("获取 diff 内容失败: {}", e.getMessage());
             return "";

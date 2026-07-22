@@ -402,4 +402,10 @@ public class ProjectImportService {
     private record ProgressEvent(String stage, String message, int percent) {}
     private record ErrorEvent(String errorCode, String message) {}
     private record ProjectEvent(Long id, String name) {}
+
+    /** 验证 Git 仓库 URL 格式 */
+    public static boolean validateRepoUrl(String repoUrl) {
+        if (repoUrl == null || repoUrl.isBlank()) return false;
+        return repoUrl.startsWith("https://") || repoUrl.startsWith("git@") || repoUrl.startsWith("ssh://");
+    }
 }

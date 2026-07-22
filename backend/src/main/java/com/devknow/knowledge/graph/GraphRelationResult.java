@@ -9,6 +9,7 @@ import lombok.Data;
 @Data
 @AllArgsConstructor
 public class GraphRelationResult {
+    private Long sourceDocId;
     private Long docId;
     private String title;
     private int level;

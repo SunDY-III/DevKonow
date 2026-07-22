@@ -204,15 +204,15 @@ public class Reranker {
         if (projectId == null || codeTerms.isEmpty()) return Map.of();
 
         try {
-            // 一次批量查询所有方法的调用方
-            Map<String, List<String>> batchCallers = codeUnitRepo.findCallersByMethodNames(projectId, codeTerms);
+            // 逐个查询每个方法的调用方，组装为 Map<方法名, 调用方列表>
             Map<String, Set<String>> result = new HashMap<>();
-            for (Map.Entry<String, List<String>> entry : batchCallers.entrySet()) {
-                if (!entry.getValue().isEmpty()) {
-                    Set<String> normalized = entry.getValue().stream()
+            for (String term : codeTerms) {
+                List<String> callers = codeUnitRepo.findCallersByMethodName(projectId, term);
+                if (!callers.isEmpty()) {
+                    Set<String> normalized = callers.stream()
                             .map(String::toLowerCase)
                             .collect(Collectors.toSet());
-                    result.put(entry.getKey(), normalized);
+                    result.merge(term, normalized, (a, b) -> { a.addAll(b); return a; });
                 }
             }
             return result;

@@ -55,6 +55,8 @@ public class CodeIndexModeService {
     }
 
     /** 设置当前项目目录（用于 SCIP 索引生成） */
+    public String getCurrentProjectDir() { return currentProjectDir; }
+
     public void setCurrentProjectDir(String projectDir) {
         this.currentProjectDir = projectDir;
     }

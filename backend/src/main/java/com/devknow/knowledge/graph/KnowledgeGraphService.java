@@ -309,9 +309,49 @@ public class KnowledgeGraphService {
             int level = ((Number) row.getOrDefault("level", 0)).intValue();
             String relType = (String) row.getOrDefault("relTypes", "");
             int hops = ((Number) row.getOrDefault("hops", 0)).intValue();
-            list.add(new GraphRelationResult(id, title, level, relType, hops));
+            list.add(new GraphRelationResult(0L, id, title, level, relType, hops));
         }
         return list;
+    }
+
+    // ==================== 批量查询 ====================
+
+    /**
+     * 批量查询多个文档的关联文档（一次 Neo4j 查询，替代逐 docId 循环）。
+     *
+     * @param docIds  起始文档 ID 列表
+     * @param maxHops 最大跳数（1~5）
+     * @return 关联文档列表（包含 sourceDocId 标记来源）
+     */
+    public List<GraphRelationResult> findRelatedBatch(List<Long> docIds, int maxHops) {
+        if (docIds == null || docIds.isEmpty()) return List.of();
+        return executeInTransaction(tx -> {
+            int hops = Math.min(Math.max(maxHops, 1), 5);
+            // 用 UNWIND 处理批量输入
+            Result result = tx.execute(
+                    "UNWIND $docIds AS sourceDocId " +
+                    "MATCH (d:Document {docId: sourceDocId})-[*1.." + hops + "]-(related) " +
+                    "WHERE related.docId <> sourceDocId " +
+                    "RETURN distinct sourceDocId AS sourceDocId, " +
+                    "related.docId AS docId, " +
+                    "related.title AS title, related.level AS level, " +
+                    "reduce(s = '', r IN relationships(p) | s + type(r) + ' ') AS relTypes, " +
+                    "length(p) AS hops " +
+                    "ORDER BY hops, related.level",
+                    Map.of("docIds", docIds));
+            List<GraphRelationResult> list = new ArrayList<>();
+            while (result.hasNext()) {
+                Map<String, Object> row = result.next();
+                long sourceDocId = ((Number) row.getOrDefault("sourceDocId", 0L)).longValue();
+                long id = ((Number) row.getOrDefault("docId", 0L)).longValue();
+                String title = (String) row.getOrDefault("title", "");
+                int level = ((Number) row.getOrDefault("level", 0)).intValue();
+                String relType = (String) row.getOrDefault("relTypes", "");
+                int hopsVal = ((Number) row.getOrDefault("hops", 0)).intValue();
+                list.add(new GraphRelationResult(sourceDocId, id, title, level, relType, hopsVal));
+            }
+            return list;
+        });
     }
 
     @SuppressWarnings("unchecked")

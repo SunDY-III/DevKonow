@@ -79,8 +79,8 @@ public class ChatService {
                 // 方法级检索：当配置开关打开且查询涉及方法时，使用三路渐进架构
                 List<ScoredChunk> results;
                 if (methodLevelRetrieve && ("method".equals(subRoute) || "callchain".equals(subRoute))) {
-                    RagResult ragResult = ragService.methodLevelRetrieve(userId, projectId, question);
-                    results = ragResult.getChunks();
+                    // methodLevelRetrieve 待实现，当前降级为普通 code 检索
+                    results = ragService.retrieveCode(userId, projectId, question);
                 } else {
                     results = ragService.retrieveCode(userId, projectId, question);
                 }

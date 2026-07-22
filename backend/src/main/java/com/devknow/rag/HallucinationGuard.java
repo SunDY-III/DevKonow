@@ -2,6 +2,8 @@ package com.devknow.rag;
 
 import com.devknow.vector.ScoredChunk;
 import com.fasterxml.jackson.core.type.TypeReference;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.model.chat.request.ChatRequest;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -88,7 +90,9 @@ public class HallucinationGuard {
 
         try {
             String response = fastModel.chat(
-                    dev.langchain4j.data.message.UserMessage.from(sb.toString()))
+                    ChatRequest.builder()
+                        .messages(List.of(UserMessage.from(sb.toString())))
+                        .build())
                     .aiMessage().text();
 
             List<Map<String, Object>> judgments = parseJsonArray(response);
@@ -181,7 +185,9 @@ public class HallucinationGuard {
 
         try {
             String response = fastModel.chat(
-                    dev.langchain4j.data.message.UserMessage.from(prompt))
+                    ChatRequest.builder()
+                        .messages(List.of(UserMessage.from(prompt)))
+                        .build())
                     .aiMessage().text();
 
             Map<String, Object> result = parseJsonObject(response);
@@ -285,7 +291,9 @@ public class HallucinationGuard {
 
         try {
             String response = deepModel.chat(
-                    dev.langchain4j.data.message.UserMessage.from(prompt))
+                    ChatRequest.builder()
+                        .messages(List.of(UserMessage.from(prompt)))
+                        .build())
                     .aiMessage().text();
 
             Map<String, Object> result = parseJsonObject(response);

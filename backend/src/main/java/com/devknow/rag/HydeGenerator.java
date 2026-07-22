@@ -1,7 +1,11 @@
 package com.devknow.rag;
 
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.model.chat.request.ChatRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+
+import java.util.List;
 
 /**
  * HyDE (Hypothetical Document Embeddings) 假设文档嵌入生成器。
@@ -50,8 +54,10 @@ public class HydeGenerator {
 
                     检索用文档：""".formatted(question);
 
-            String hypothesis = chatModel.chat(
-                    dev.langchain4j.data.message.UserMessage.from(prompt))
+            ChatRequest request = ChatRequest.builder()
+                    .messages(List.of(UserMessage.from(prompt)))
+                    .build();
+            String hypothesis = chatModel.chat(request)
                     .aiMessage().text();
 
             if (hypothesis == null || hypothesis.isBlank()) return question;
