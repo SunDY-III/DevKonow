@@ -88,10 +88,10 @@
             <version>8.5.10</version>
         </dependency>
 
-        <!-- 仅用其 BCrypt 实现做密码摘要，不引入完整 Spring Security 过滤器链 -->
+        <!-- Spring Security（认证/授权/安全响应头） -->
         <dependency>
-            <groupId>org.springframework.security</groupId>
-            <artifactId>spring-security-crypto</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
 
         <!-- JWT -->

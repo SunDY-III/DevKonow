@@ -1,16 +1,42 @@
 const API_BASE = '/api'
 
+/** 从 localStorage 获取 JWT token */
+function getToken() {
+  return localStorage.getItem('auth_token') || ''
+}
+
+/** 统一请求函数：自动注入 Authorization header、401 自动登出 */
 async function request(url, options = {}) {
-  const res = await fetch(API_BASE + url, {
-    headers: { 'Content-Type': 'application/json', ...options.headers },
-    ...options
-  })
+  const token = getToken()
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+    ...options.headers
+  }
+  const res = await fetch(API_BASE + url, { headers, ...options })
+  if (res.status === 401) {
+    localStorage.removeItem('auth_token')
+    window.dispatchEvent(new CustomEvent('auth:expired'))
+    const err = await res.json().catch(() => ({ message: '登录已过期，请重新登录' }))
+    throw new Error(err.message || '登录已过期，请重新登录')
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ message: res.statusText }))
     throw new Error(err.message || `HTTP ${res.status}`)
   }
   return res.json()
 }
+
+/** 创建带 Auth Token 的 EventSource（SSE 不支持自定义 Header，通过 query 参数传递） */
+function createAuthEventSource(path, params = {}) {
+  const token = getToken()
+  if (token) params.set('token', token)
+  return new EventSource(`${API_BASE}${path}?${params}`)
+}
+
+// ================== 项目管理 ==================
+
+export { createAuthEventSource, getToken, request }
 
 export function getProjects() {
   return request('/project/list')
@@ -24,16 +50,16 @@ export function deleteProject(id) {
   return request(`/project/${id}`, { method: 'DELETE' })
 }
 
-export function verifyRepo(repoUrl, token) {
+export function verifyRepo(repoUrl, gitToken) {
   const params = new URLSearchParams({ repoUrl })
-  if (token) params.set('token', token)
+  if (gitToken) params.set('gitToken', gitToken)
   return request(`/project/verify?${params}`)
 }
 
-export function createImportSSE(repoUrl, force, token) {
-  const params = new URLSearchParams({ repoUrl, force })
-  if (token) params.set('token', token)
-  return new EventSource(`${API_BASE}/project/import?${params}`)
+export function createImportSSE(repoUrl, force, gitToken) {
+  const params = new URLSearchParams({ repoUrl, force: String(force) })
+  if (gitToken) params.set('gitToken', gitToken)
+  return createAuthEventSource('/project/import', params)
 }
 
 export function reindexProject(id) {
@@ -58,7 +84,8 @@ export function switchCodeIndexMode(mode, projectDir) {
 }
 
 export function subscribeCodeIndexProgress() {
-  return new EventSource('/api/codeindex/mode/progress')
+  const params = new URLSearchParams()
+  return createAuthEventSource('/codeindex/mode/progress', params)
 }
 
 // ================== 护航学习 (Mentor) ==================
@@ -69,6 +96,20 @@ export function getMentorPlan(projectId) {
 
 export function getMentorAchievements(projectId) {
   return request(`/mentor/${projectId}/achievements`)
+}
+
+// ================== 发现推荐 (Discover) ==================
+
+export function discoverProjects(query) {
+  return request('/discover/search', {
+    method: 'POST',
+    body: JSON.stringify({ query })
+  })
+}
+
+export function createLearningImportSSE(repoUrl) {
+  const params = new URLSearchParams({ repoUrl })
+  return createAuthEventSource('/discover/import', params)
 }
 
 // ================== Feynman 检验 ==================

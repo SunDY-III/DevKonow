@@ -1,22 +1,15 @@
+import { request, getToken } from './index.js'
+
 const API_BASE = '/api'
 
-async function request(url, options = {}) {
-  const res = await fetch(API_BASE + url, {
-    headers: { 'Content-Type': 'application/json', ...options.headers },
-    ...options
-  })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ message: res.statusText }))
-    throw new Error(err.message || `HTTP ${res.status}`)
-  }
-  return res.json()
-}
-
-// 知识提取
+// 知识提取（fetch 直接调用，非 request 封装）
 export function createExtractSSE(question, answer, codeContext, projectId) {
+  const token = getToken()
+  const headers = { 'Content-Type': 'application/json' }
+  if (token) headers['Authorization'] = `Bearer ${token}`
   return fetch(`${API_BASE}/study/extract`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ question, answer, codeContext, projectId })
   })
 }

@@ -1,16 +1,4 @@
-const API_BASE = '/api'
-
-async function request(url, options = {}) {
-  const res = await fetch(API_BASE + url, {
-    headers: { 'Content-Type': 'application/json', ...options.headers },
-    ...options
-  })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ message: res.statusText }))
-    throw new Error(err.message || `HTTP ${res.status}`)
-  }
-  return res.json()
-}
+import { request } from './index.js'
 
 /**
  * TODO CRUD API。

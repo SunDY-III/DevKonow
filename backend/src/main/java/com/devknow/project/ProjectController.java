@@ -49,11 +49,11 @@ public class ProjectController {
 
     @PostMapping("/verify")
     public ApiResponse<Map<String, Object>> verifyRepo(@RequestParam String repoUrl,
-                                                        @RequestParam(required = false) String token,
+                                                        @RequestParam(required = false) String gitToken,
                                                         @RequestParam(required = false) String sshKey) {
         try {
             boolean isSsh = sshKey != null && !sshKey.isBlank();
-            String result = gitRepoManager.verifyRepo(repoUrl, isSsh ? sshKey : token, isSsh);
+            String result = gitRepoManager.verifyRepo(repoUrl, isSsh ? sshKey : gitToken, isSsh);
             String repoName = GitRepoManager.extractRepoName(repoUrl);
             String authType = isSsh ? "SSH Key" : "Token";
 
@@ -79,7 +79,7 @@ public class ProjectController {
     @PostMapping("/import")
     public SseEmitter importProject(@RequestParam String repoUrl,
                                      @RequestParam(defaultValue = "false") boolean force,
-                                     @RequestParam(required = false) String token,
+                                     @RequestParam(required = false) String gitToken,
                                      @RequestParam(required = false) String sshKey) {
         UserContext.require();
 
@@ -92,7 +92,7 @@ public class ProjectController {
 
         SseEmitter emitter = new SseEmitter(600_000L);
         boolean isSsh = sshKey != null && !sshKey.isBlank();
-        projectImportService.importFromRepo(repoUrl, force, isSsh ? sshKey : token, isSsh, emitter);
+        projectImportService.importFromRepo(repoUrl, force, isSsh ? sshKey : gitToken, isSsh, emitter);
         return emitter;
     }
 

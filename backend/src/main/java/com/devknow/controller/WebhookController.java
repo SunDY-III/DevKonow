@@ -1,6 +1,7 @@
 package com.devknow.controller;
 
 import com.devknow.common.UserContext;
+import com.devknow.project.ProjectImportService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -32,6 +33,9 @@ public class WebhookController {
 
     private final ProjectImportService projectImportService;
 
+    @org.springframework.beans.factory.annotation.Value("${app.webhook.token:}")
+    private String expectedToken;
+
     /**
      * 通用 Webhook 入口。
      * 支持 GitHub / GitLab / Gitee 的 push 事件 JSON。
@@ -39,9 +43,16 @@ public class WebhookController {
     @PostMapping("/git")
     public ResponseEntity<Map<String, Object>> handlePush(@RequestBody Map<String, Object> payload,
                                                           @RequestParam(required = false) String token) {
-        // Token 认证（如果配置了 token）
+        // Token 认证：与配置的 webhook token 比对
+        if (expectedToken.isBlank()) {
+            return ResponseEntity.status(500).body(Map.of("error", "webhook token not configured"));
+        }
         if (token == null || token.isBlank()) {
             return ResponseEntity.status(401).body(Map.of("error", "missing token"));
+        }
+        if (!expectedToken.equals(token)) {
+            log.warn("Webhook token mismatch");
+            return ResponseEntity.status(403).body(Map.of("error", "invalid token"));
         }
 
         try {

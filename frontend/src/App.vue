@@ -61,6 +61,13 @@
             <span v-if="currentMode === 'scip'" class="mode-check">✓</span>
           </div>
         </div>
+        <div class="auth-area">
+          <template v-if="authStore.isLoggedIn">
+            <span class="auth-username">{{ authStore.username }}</span>
+            <button class="auth-btn" @click="authStore.logout()">登出</button>
+          </template>
+          <button v-else class="auth-btn" @click="showAuthDialog = true">登录</button>
+        </div>
       </div>
     </header>
 
@@ -69,31 +76,47 @@
     </main>
 
     <ScipModal v-if="showScipModal" :project-dir="selectedProjectDir" @close="onScipModalClose" />
+    <AuthDialog v-if="showAuthDialog" @close="showAuthDialog = false" />
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getCodeIndexMode, getProjects } from './api/index.js'
 import { useProjectStore } from './stores/useProjectStore.js'
+import { useAuthStore } from './stores/useAuthStore.js'
 import ScipModal from './components/ScipModal.vue'
+import AuthDialog from './components/AuthDialog.vue'
 
 const router = useRouter()
 const projectStore = useProjectStore()
+const authStore = useAuthStore()
 
 const currentMode = ref('tree-sitter')
 const showModeMenu = ref(false)
 const showScipModal = ref(false)
 const selectedProjectDir = ref('')
 const selectedProjectId = ref('')
+const showAuthDialog = ref(false)
 
 const modeLabel = computed(() => {
   if (currentMode.value === 'scip') return 'SCIP'
   return 'Tree-sitter'
 })
 
+/** 监听 auth:expired 事件（由 api/index.js 在 401 时触发）*/
+function onAuthExpired() {
+  authStore.logout()
+  showAuthDialog.value = true
+}
+
 onMounted(async () => {
+  authStore.initFromStorage()
+  // 无 token 时弹出登录框
+  if (!authStore.isLoggedIn) {
+    showAuthDialog.value = true
+  }
   try {
     const resp = await getCodeIndexMode()
     currentMode.value = resp.mode
@@ -102,6 +125,11 @@ onMounted(async () => {
     await projectStore.ensureLoaded()
   } catch {}
   document.addEventListener('click', () => { showModeMenu.value = false })
+  window.addEventListener('auth:expired', onAuthExpired)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('auth:expired', onAuthExpired)
 })
 
 function onProjectChange() {
@@ -246,7 +274,10 @@ function onScipModalClose() {
 }
 .project-selector:focus { border-color: #c15f3c; outline: none; }
 
-/* ── Mode Selector ── */
+/*
+ * ── Mode Selector ──
+ * (keep existing mode-selector block)
+ */
 .mode-selector {
   display: flex;
   align-items: center;
@@ -261,6 +292,39 @@ function onScipModalClose() {
   user-select: none;
 }
 .mode-selector:hover { border-color: #d4cfc2; background: #f8f6f0; }
+
+/* ── Auth Area ── */
+.auth-area {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 8px;
+  padding-left: 12px;
+  border-left: 1px solid #e8e3d8;
+}
+
+.auth-username {
+  font-size: 13px;
+  font-weight: 500;
+  color: #5a5548;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auth-btn {
+  padding: 4px 10px;
+  border: 1px solid #e8e3d8;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #5a5548;
+  background: #fff;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.auth-btn:hover { border-color: #c15f3c; color: #c15f3c; }
 
 .mode-indicator {
   width: 7px;

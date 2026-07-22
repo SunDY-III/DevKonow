@@ -18,7 +18,7 @@
           <label>Token <span class="text-muted text-sm">（私有仓库需要）</span></label>
           <div class="input-with-icon">
             <svg class="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-            <input v-model="token" type="password" placeholder="可选（ghp_xxxxx）" />
+            <input v-model="gitToken" type="password" placeholder="可选（ghp_xxxxx）" />
           </div>
         </div>
       </div>
@@ -66,7 +66,7 @@ import { ref, computed } from 'vue'
 import { verifyRepo as verifyApi, createImportSSE } from '../api/index.js'
 
 const repoUrl = ref('')
-const token = ref('')
+const gitToken = ref('')
 const verifying = ref(false)
 const importing = ref(false)
 const verifyResult = ref(null)
@@ -84,7 +84,7 @@ async function verifyRepo() {
   verifying.value = true
   verifyResult.value = null
   try {
-    const res = await verifyApi(repoUrl.value, token.value)
+    const res = await verifyApi(repoUrl.value, gitToken.value)
     verifyResult.value = res.data || res
   } catch (e) {
     verifyResult.value = { valid: false, message: e.message }
@@ -99,7 +99,7 @@ function startImport() {
   errorMsg.value = ''
   errorCode.value = ''
 
-  es = createImportSSE(repoUrl.value, false, token.value)
+  es = createImportSSE(repoUrl.value, false, gitToken.value)
 
   es.addEventListener('progress', (e) => {
     try { progress.value = JSON.parse(e.data) } catch {}

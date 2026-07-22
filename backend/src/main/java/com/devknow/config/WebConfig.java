@@ -1,6 +1,5 @@
 package com.devknow.config;
 
-import com.devknow.auth.JwtInterceptor;
 import com.devknow.governance.RateLimitInterceptor;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Configuration;
@@ -12,23 +11,24 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 @RequiredArgsConstructor
 public class WebConfig implements WebMvcConfigurer {
 
-    private final JwtInterceptor jwtInterceptor;
     private final RateLimitInterceptor rateLimitInterceptor;
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        // 顺序：先鉴权（拿到 userId），再做用户级限流
-        registry.addInterceptor(jwtInterceptor)
-                .addPathPatterns("/api/**")
-                .excludePathPatterns("/api/auth/**");
+        // 速率限制器（JWT 认证已由 JwtAuthFilter 在 Spring Security 过滤链中完成）
         registry.addInterceptor(rateLimitInterceptor)
                 .addPathPatterns("/api/**")
-                .excludePathPatterns("/api/auth/**");
+                .excludePathPatterns("/api/auth/register", "/api/auth/profile",
+                        "/api/auth/knowledge-role", "/api/auth/knowledge-roles");
     }
 
     @Override
     public void addCorsMappings(CorsRegistry registry) {
-        registry.addMapping("/**").allowedOriginPatterns("*")
-                .allowedMethods("*").allowedHeaders("*");
+        registry.addMapping("/api/**")
+                .allowedOriginPatterns("http://localhost:*", "tauri://localhost*", "https://*.devknow.app")
+                .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH")
+                .allowedHeaders("Content-Type", "Authorization", "X-Requested-With")
+                .exposedHeaders("Authorization")
+                .allowCredentials(true);
     }
 }

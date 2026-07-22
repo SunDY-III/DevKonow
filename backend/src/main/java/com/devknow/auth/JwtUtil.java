@@ -38,4 +38,12 @@ public class JwtUtil {
                 .parseClaimsJws(token).getBody();
         return Long.valueOf(claims.getSubject());
     }
+
+    /** 从 Token 中提取角色声明（供 Spring Security 方法级鉴权使用） */
+    public String parseRole(String token) {
+        Claims claims = Jwts.parserBuilder().setSigningKey(key).build()
+                .parseClaimsJws(token).getBody();
+        String role = claims.get("role", String.class);
+        return role != null ? role : "USER";
+    }
 }

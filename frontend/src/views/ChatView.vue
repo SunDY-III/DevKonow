@@ -252,6 +252,8 @@ async function send() {
     conversationId: Date.now().toString()
   })
   if (currentProjectId.value) params.set('projectId', currentProjectId.value)
+  const token = localStorage.getItem('auth_token')
+  if (token) params.set('token', token)
 
   es = new EventSource(`/api/chat/stream?${params}`)
   let answer = ''
