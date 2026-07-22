@@ -1,3 +1,24 @@
-示例敏感词A
-示例敏感词B
-违禁词样例
+# DevKnow 敏感词过滤列表
+# 每行一个词，Trie 自动机匹配。输入（提问）和输出（回答）双向拦截。
+# --- 凭据泄露防护 ---
+api key
+api_key
+api-secret
+access_key
+secret_key
+private_key
+-----BEGIN RSA PRIVATE KEY-----
+-----BEGIN OPENSSH PRIVATE KEY-----
+-----BEGIN DSA PRIVATE KEY-----
+-----BEGIN EC PRIVATE KEY-----
+sk-proj-
+sk-live-
+sk-test-
+ghp_
+gho_
+ghu_
+ghs_
+ghr_
+xoxp-
+xoxb-
+xapp-

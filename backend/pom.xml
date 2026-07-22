@@ -38,6 +38,17 @@
             <artifactId>spring-boot-starter-aop</artifactId>
         </dependency>
 
+        <!-- 生产就绪：健康检查 / 指标 / 优雅停机 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>8.0</version>
+        </dependency>
+
         <!-- 数据层：MySQL + JPA + Redis + RabbitMQ -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

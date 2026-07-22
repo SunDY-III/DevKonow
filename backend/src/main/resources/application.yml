@@ -3,10 +3,13 @@ server:
   # SSE 长连接：异步请求超时设大一点，避免流式输出中途被容器切断
   tomcat:
     connection-timeout: 60s
+  shutdown: graceful          # 优雅停机：不再接收新请求，等待已有请求完成
 
 spring:
   application:
     name: zhishu-ai-agent
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
   datasource:
     url: jdbc:mysql://localhost:3306/devknow?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
     username: root
@@ -20,6 +23,7 @@ spring:
     redis:
       host: localhost
       port: 6379
+      password: ${REDIS_PASSWORD:}
   rabbitmq:
     host: localhost
     port: 5672
@@ -36,8 +40,8 @@ spring:
 
 minio:
   endpoint: http://localhost:9000
-  access-key: ${MINIO_ACCESS_KEY:minioadmin}
-  secret-key: ${MINIO_SECRET_KEY:minioadmin}
+  access-key: ${MINIO_ROOT_USER:minioadmin}
+  secret-key: ${MINIO_ROOT_PASSWORD:minioadmin}
   bucket: zhishu-docs
 
 llm:
@@ -74,6 +78,22 @@ llm:
   embedding-timeout-seconds: ${LLM_EMBEDDING_TIMEOUT:30}
 
   max-concurrency: 8          # LLM 调用层信号量并发上限，防止打爆 API 配额
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+  health:
+    redis:
+      enabled: true
+    rabbitmq:
+      enabled: true
 
 app:
   jwt:
