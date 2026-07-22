@@ -1,6 +1,7 @@
 package com.devknow.cache;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.Set;
 import com.devknow.vector.QdrantClientManager;
 import com.devknow.vector.ScoredChunk;
 import com.devknow.vector.VectorStoreService;
@@ -11,7 +12,6 @@ import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.Cursor;
 import org.springframework.data.redis.core.ScanOptions;
@@ -173,6 +173,13 @@ public class SemanticCacheService {
         redis.opsForValue().set(redisKey,
                 objectMapper.writeValueAsString(e), Duration.ofHours(ttlHours));
 
+        // 记录 docId → cacheKey 映射，支持 O(1) 批量失效
+        if (sourceDocIds != null) {
+            for (Long docId : sourceDocIds) {
+                redis.opsForSet().add("sem:doc:" + docId, redisKey);
+            }
+        }
+
         // Cache-Aside：异步写入 Qdrant（不阻塞主流程）
         QdrantClient qdrant = qdrantManager.getClient();
         if (qdrant != null) {
@@ -205,23 +212,11 @@ public class SemanticCacheService {
 
     /** 知识库文档变更 -> 清除依据该文档生成的缓存条目 */
     public void invalidateByDoc(Long docId) {
-        int deleted = 0;
-        try (Cursor<String> cursor = redis.scan(ScanOptions.scanOptions().match(KEY_PREFIX + "*").count(200).build())) {
-            while (cursor.hasNext()) {
-                String key = cursor.next();
-                String json = redis.opsForValue().get(key);
-                if (json == null) continue;
-                try {
-                    CacheEntry e = objectMapper.readValue(json, CacheEntry.class);
-                    if (e.getSourceDocIds() != null && e.getSourceDocIds().contains(docId)) {
-                        redis.delete(key);
-                        deleted++;
-                    }
-                } catch (Exception ignored) { }
-            }
-        }
-        if (deleted > 0) {
-            log.info("语义缓存失效: {} 条因 docId={}", deleted, docId);
-        }
+        String docSetKey = "sem:doc:" + docId;
+        Set<String> keys = redis.opsForSet().members(docSetKey);
+        if (keys == null || keys.isEmpty()) return;
+        redis.delete(keys);
+        redis.delete(docSetKey);
+        log.info("语义缓存失效: {} 条因 docId={}", keys.size(), docId);
     }
 }

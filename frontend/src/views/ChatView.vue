@@ -237,6 +237,12 @@ onMounted(async () => {
   }
 })
 
+// SSE 重连状态
+let reconnectTimer = null
+let retryCount = 0
+const maxRetries = 3
+let lastSSEParams = null
+
 async function send() {
   const q = question.value.trim()
   if (!q || loading.value) return
@@ -255,7 +261,22 @@ async function send() {
   const token = localStorage.getItem('auth_token')
   if (token) params.set('token', token)
 
+  lastSSEParams = params
   es = new EventSource(`/api/chat/stream?${params}`)
+  bindSSEEvents(es)
+
+  // 幻觉校正：LlmStreamingService 发来的修正后答案
+  es.addEventListener('corrected', (e) => {
+    const last = messages.value[messages.value.length - 1]
+    if (last?.role === 'assistant') {
+      last.content = e.data
+    }
+    scrollToBottom()
+  })
+}
+
+/** SSE 事件绑定（支持断线后重绑） */
+function bindSSEEvents(es) {
   let answer = ''
 
   es.addEventListener('token', (e) => {
@@ -277,40 +298,38 @@ async function send() {
     } catch {}
   })
 
-  // 路由事件
-  es.addEventListener('route', (e) => {
-    currentRoute.value = e.data
-  })
-
-  // 阶段事件
-  es.addEventListener('phase', (e) => {
-    currentRoute.value = e.data
-  })
-
-  // 步骤进度（Agent 模式）
-  es.addEventListener('step', (e) => {
-    currentStep.value = e.data
-  })
-
-  // 缓存命中
-  es.addEventListener('cache', (e) => {
-    fromCache.value = e.data === 'true'
-  })
+  es.addEventListener('route', (e) => { currentRoute.value = e.data })
+  es.addEventListener('phase', (e) => { currentRoute.value = e.data })
+  es.addEventListener('step', (e) => { currentStep.value = e.data })
+  es.addEventListener('cache', (e) => { fromCache.value = e.data === 'true' })
 
   es.addEventListener('done', () => {
     es.close(); loading.value = false; scrollToBottom()
+    retryCount = 0
     const last = messages.value[messages.value.length - 1]
     if (last?.role === 'assistant') last.completed = true
   })
-  es.addEventListener('error', () => { es.close(); loading.value = false })
 
-  // 幻觉校正：LlmStreamingService 发来的修正后答案
   es.addEventListener('corrected', (e) => {
     const last = messages.value[messages.value.length - 1]
     if (last?.role === 'assistant') {
       last.content = e.data
     }
     scrollToBottom()
+  })
+
+  es.addEventListener('error', () => {
+    es.close(); loading.value = false
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+    // 指数退避重连
+    if (lastSSEParams && retryCount < maxRetries) {
+      retryCount++
+      const delay = Math.min(30000, 1000 * Math.pow(2, retryCount - 1))
+      reconnectTimer = setTimeout(() => {
+        es = new EventSource(`/api/chat/stream?${lastSSEParams}`)
+        bindSSEEvents(es)
+      }, delay)
+    }
   })
 }
 

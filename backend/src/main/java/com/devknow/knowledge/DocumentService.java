@@ -18,7 +18,9 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.DigestUtils;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -44,50 +46,65 @@ public class DocumentService {
     private String bucket;
 
     /**
-     * 上传入口：只做轻量操作（MD5 去重 + 落 MinIO + 发 MQ），耗时解析全部异步。
-     * 幂等设计：同 MD5 文档秒级返回已有记录 —— 与“秒传”同一方法论。
+     * 上传入口：流式处理避免 OOM。写入临时文件（磁盘）→ 流式 MD5 → 流式上传 MinIO。
+     * 幂等设计：同 MD5 文档秒级返回已有记录 —— 与”秒传”同一方法论。
      */
     @SneakyThrows
     public KnowledgeDocument upload(Long userId, MultipartFile file) {
-        byte[] bytes = file.getBytes();
-        String md5 = DigestUtils.md5DigestAsHex(bytes);
-
-        var existed = docRepository.findByFileMd5AndDeleted(md5, 0);
-        if (existed.isPresent()) {
-            log.info("doc md5 hit, instant return: {}", md5);
-            return existed.get();    // 秒传：不重复解析、不重复向量化
-        }
-
-        String objectKey = UUID.randomUUID() + "/" + file.getOriginalFilename();
-        minioClient.putObject(PutObjectArgs.builder()
-                .bucket(bucket).object(objectKey)
-                .stream(new ByteArrayInputStream(bytes), bytes.length, -1)
-                .contentType(file.getContentType())
-                .build());
-
-        KnowledgeDocument doc = new KnowledgeDocument();
-        doc.setUserId(userId);
-        doc.setFileName(file.getOriginalFilename());
-        doc.setFileMd5(md5);
-        doc.setObjectKey(objectKey);
-        doc.setStatus("PARSING");
-        doc.setVersion(1);
-        doc.setDeleted(0);
-        doc.setChunkCount(0);
+        // 将上传内容写入临时文件（磁盘 I/O，不占用 JVM 堆内存）
+        Path tempFile = Files.createTempFile("upload-", file.getOriginalFilename());
         try {
-            docRepository.save(doc);
-        } catch (DataIntegrityViolationException e) {
-            // 并发上传同一 MD5：唯一约束 (file_md5, deleted) 阻止重复插入，
-            // 返回已有记录，MinIO 残留对象由定期清理任务兜底
-            log.info("doc md5 concurrent duplicate, fallback to existing: {}", md5);
-            var existing = docRepository.findByFileMd5AndDeleted(md5, 0)
-                    .orElseThrow(() -> new BizException("文档上传失败，请稍后重试"));
-            return existing;
+            file.transferTo(tempFile.toFile());
+
+            // 流式计算 MD5（DigestInputStream 内存安全）
+            String md5;
+            try (InputStream is = Files.newInputStream(tempFile)) {
+                md5 = DigestUtils.md5DigestAsHex(is);
+            }
+
+            // 幂等：MD5 命中直接返回
+            var existed = docRepository.findByFileMd5AndDeleted(md5, 0);
+            if (existed.isPresent()) {
+                log.info("doc md5 hit, instant return: {}", md5);
+                return existed.get();
+            }
+
+            String objectKey = UUID.randomUUID() + "/" + file.getOriginalFilename();
+            // 流式上传 MinIO（每次只读 10MB 分块，不加载全文）
+            try (InputStream is = Files.newInputStream(tempFile)) {
+                minioClient.putObject(PutObjectArgs.builder()
+                        .bucket(bucket).object(objectKey)
+                        .stream(is, file.getSize(), 10 * 1024 * 1024)
+                        .contentType(file.getContentType())
+                        .build());
+            }
+            KnowledgeDocument doc = new KnowledgeDocument();
+            doc.setUserId(userId);
+            doc.setFileName(file.getOriginalFilename());
+            doc.setFileMd5(md5);
+            doc.setObjectKey(objectKey);
+            doc.setStatus("PARSING");
+            doc.setVersion(1);
+            doc.setDeleted(0);
+            doc.setChunkCount(0);
+            try {
+                docRepository.save(doc);
+            } catch (DataIntegrityViolationException e) {
+                // 并发上传同一 MD5：唯一约束 (file_md5, deleted) 阻止重复插入，
+                // 返回已有记录，MinIO 残留对象由定期清理任务兜底
+                log.info("doc md5 concurrent duplicate, fallback to existing: {}", md5);
+                var existing = docRepository.findByFileMd5AndDeleted(md5, 0)
+                        .orElseThrow(() -> new BizException("文档上传失败，请稍后重试"));
+                return existing;
+            }
+
+            redis.opsForValue().set(PROGRESS_KEY + doc.getId(), "0", Duration.ofHours(1));
+            rabbitTemplate.convertAndSend(RabbitConfig.DOC_EXCHANGE, RabbitConfig.DOC_ROUTING_KEY, String.valueOf(doc.getId()));
+            return doc;
+        } finally {
+            Files.deleteIfExists(tempFile);
         }
 
-        redis.opsForValue().set(PROGRESS_KEY + doc.getId(), "0", Duration.ofHours(1));
-        rabbitTemplate.convertAndSend(RabbitConfig.DOC_EXCHANGE, RabbitConfig.DOC_ROUTING_KEY, String.valueOf(doc.getId()));
-        return doc;
     }
 
     public Page<KnowledgeDocument> listMine(Long userId, Pageable pageable) {

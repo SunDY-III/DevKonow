@@ -7,6 +7,10 @@ server:
     connection-timeout: 60s
 
 spring:
+  servlet:
+    multipart:
+      file-size-threshold: 0B    # 直接写磁盘，避免小文件也占堆内存
+      resolve-lazily: true       # 延迟解析，上传超大文件时不阻塞
   datasource:
     url: jdbc:mysql://localhost:3306/devknow?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
     username: root

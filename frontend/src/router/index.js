@@ -15,7 +15,9 @@ const routes = [
   // Phase 3: 模板市场
   { path: '/templates', name: 'templates', component: () => import('../views/TemplateMarketView.vue') },
   // Phase 3: 管理后台
-  { path: '/admin/prompts', name: 'admin-prompts', component: () => import('../views/AdminPromptView.vue') }
+  { path: '/admin/prompts', name: 'admin-prompts', component: () => import('../views/AdminPromptView.vue') },
+  // 404 兜底
+  { path: '/:pathMatch(.*)*', name: 'not-found', redirect: '/chat' }
 ]
 
 const router = createRouter({
