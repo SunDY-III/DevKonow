@@ -43,7 +43,8 @@ public class SensitiveWordFilter {
         }
     }
 
-    private void addWord(String word) {
+    /** package-private 以便单元测试注入测试词库 */
+    void addWord(String word) {
         TrieNode node = root;
         for (char c : word.toCharArray()) {
             node = node.children.computeIfAbsent(c, k -> new TrieNode());
