@@ -56,6 +56,22 @@ public class VectorStoreService {
         }
     }
 
+    /** 批量写入（文档解析场景：减少网络 RTT，提升吞吐） */
+    public void saveBatch(List<VectorRecord> records) {
+        QdrantClient client = qdrantManager.getClient();
+        if (client == null) { log.warn("Qdrant 不可用，跳过批量向量存储"); return; }
+
+        List<PointStruct> points = records.stream()
+                .map(this::toPoint)
+                .collect(java.util.stream.Collectors.toList());
+        try {
+            client.upsertAsync(collectionName, points)
+                    .get(30, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.warn("Qdrant 批量写入失败: records={}", records.size(), e);
+        }
+    }
+
     // ==================== 检索 ====================
 
     public List<ScoredChunk> search(float[] queryVector, int topK) {

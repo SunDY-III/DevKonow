@@ -87,25 +87,36 @@ public class DocumentParseListener {
         if (chunks.isEmpty()) throw new IllegalStateException("文档无有效文本");
         setProgress(doc.getId(), 30);
 
-        // 3. 逐块向量化入库（落 MySQL 拿 chunkId 作引用溯源锚点，再写向量库）
+        // 3. 批量向量化入库
+        List<DocumentChunk> chunkEntities = new java.util.ArrayList<>(chunks.size());
+        List<VectorRecord> vectorRecords = new java.util.ArrayList<>(chunks.size());
         for (int i = 0; i < chunks.size(); i++) {
             String content = chunks.get(i);
-
             DocumentChunk chunk = new DocumentChunk();
             chunk.setDocId(doc.getId());
             chunk.setDocVersion(doc.getVersion());
             chunk.setSeq(i);
             chunk.setContent(content);
-            chunkRepository.save(chunk);
+            chunkEntities.add(chunk);
 
             float[] vector = embeddingModel.embed(content).content().vector();
-            tokenAuditService.record(doc.getUserId(), "EMBEDDING", content.length() / 2, 0);  // 估算
-            vectorStoreService.save(new VectorRecord(
-                    doc.getId(), doc.getVersion(), chunk.getId(), i, doc.getFileName(), content, vector,
+            tokenAuditService.record(doc.getUserId(), "EMBEDDING", content.length() / 2, 0);
+            // chunkId 暂用占位，saveAll 后从 entity 获取
+            vectorRecords.add(new VectorRecord(
+                    doc.getId(), doc.getVersion(), null, i, doc.getFileName(), content, vector,
                     doc.getLevel()));
-
-            setProgress(doc.getId(), 30 + (int) (70.0 * (i + 1) / chunks.size()));
         }
+
+        // 批量写入 MySQL
+        chunkRepository.saveAll(chunkEntities);
+
+        // 批量写入 Qdrant（回填 chunkId）
+        for (int i = 0; i < vectorRecords.size(); i++) {
+            vectorRecords.get(i).setChunkId(chunkEntities.get(i).getId());
+        }
+        vectorStoreService.saveBatch(vectorRecords);
+
+        setProgress(doc.getId(), 95);
 
         doc.setStatus("READY");
         doc.setChunkCount(chunks.size());

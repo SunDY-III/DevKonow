@@ -20,7 +20,8 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.ByteArrayInputStream;
 import java.time.Duration;
-import java.util.List;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import java.util.Map;
 import java.util.UUID;
 
@@ -89,8 +90,8 @@ public class DocumentService {
         return doc;
     }
 
-    public List<KnowledgeDocument> listMine(Long userId) {
-        return docRepository.findByUserIdAndDeletedOrderByIdDesc(userId, 0);
+    public Page<KnowledgeDocument> listMine(Long userId, Pageable pageable) {
+        return docRepository.findByUserIdAndDeleted(userId, 0, pageable);
     }
 
     public Map<String, Object> progress(Long userId, Long docId) {

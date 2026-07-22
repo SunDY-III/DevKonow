@@ -16,6 +16,8 @@ services:
       qdrant:
         condition: service_healthy
     env_file: .env
+    volumes:
+      - neo4j-data:/app/data
     networks:
       - backend-net
     deploy:
@@ -153,3 +155,4 @@ volumes:
   mysql-data:
   minio-data:
   qdrant-data:
+  neo4j-data:

@@ -1,0 +1,54 @@
+# ==================== 生产环境配置 ====================
+# 服务地址：Docker 内部网络，强密码，关闭调试
+# 激活方式：SPRING_PROFILES_ACTIVE=prod 或 --spring.profiles.active=prod
+
+spring:
+  datasource:
+    url: jdbc:mysql://${DB_HOST:mysql}:3306/devknow?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+    username: root
+    password: ${DB_PASSWORD:?DB_PASSWORD is required}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # HikariCP 连接池调优
+    hikari:
+      maximum-pool-size: ${HIKARI_MAX_POOL:20}
+      minimum-idle: ${HIKARI_MIN_IDLE:5}
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+  data:
+    redis:
+      host: ${REDIS_HOST:redis}
+      port: 6379
+      password: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+  rabbitmq:
+    host: ${RABBITMQ_HOST:rabbitmq}
+    port: 5672
+    username: ${RABBITMQ_USER:guest}
+    password: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}
+
+minio:
+  endpoint: http://${MINIO_HOST:minio}:9000
+  access-key: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+  secret-key: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+  bucket: zhishu-docs
+
+# 生产环境：关闭 LLM 请求日志，降低 Token 消耗
+llm:
+  log-requests: false
+  log-responses: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+  health:
+    redis:
+      enabled: true
+    rabbitmq:
+      enabled: true

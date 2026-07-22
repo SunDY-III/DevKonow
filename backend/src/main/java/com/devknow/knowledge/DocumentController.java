@@ -3,10 +3,11 @@ package com.devknow.knowledge;
 import com.devknow.common.ApiResponse;
 import com.devknow.common.UserContext;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -22,8 +23,8 @@ public class DocumentController {
     }
 
     @GetMapping("/list")
-    public ApiResponse<List<KnowledgeDocument>> list() {
-        return ApiResponse.ok(documentService.listMine(UserContext.require()));
+    public ApiResponse<Page<KnowledgeDocument>> list(Pageable pageable) {
+        return ApiResponse.ok(documentService.listMine(UserContext.require(), pageable));
     }
 
     @GetMapping("/{id}/progress")
