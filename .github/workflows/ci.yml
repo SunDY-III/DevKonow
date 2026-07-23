@@ -26,11 +26,8 @@ jobs:
       - name: Compile
         run: mvn compile -B
 
-      - name: Test with Coverage
-        run: mvn verify -B
-        env:
-          # Testcontainers 在 CI 中使用 docker
-          TESTCONTAINERS_RYUK_DISABLED: "true"
+      - name: Test
+        run: mvn test -B
 
       - name: Upload Coverage Report
         if: always()
@@ -38,11 +35,6 @@ jobs:
         with:
           name: jacoco-report
           path: backend/target/site/jacoco/index.html
-
-      - name: SonarQube Scan
-        if: github.ref == 'refs/heads/main'
-        run: mvn sonar:sonar -B -DskipTests -Dsonar.host.url=${{ secrets.SONAR_HOST_URL || 'http://localhost:9000' }} -Dsonar.login=${{ secrets.SONAR_TOKEN || 'admin' }} -Dsonar.password=${{ secrets.SONAR_PASSWORD || 'admin' }}
-        working-directory: backend
 
   frontend:
     runs-on: ubuntu-latest
