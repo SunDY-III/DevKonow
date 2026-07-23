@@ -12,5 +12,7 @@ backend/target/
 .vscode/
 .claude/
 output/
+docs/
+.env*
 src-tauri/target/
 frontend/dist/
