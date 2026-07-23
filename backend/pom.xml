@@ -168,7 +168,7 @@
         <dependency>
             <groupId>io.github.bonede</groupId>
             <artifactId>tree-sitter-go</artifactId>
-            <version>0.20.0</version>
+            <version>0.25.0</version>
         </dependency>
         <dependency>
             <groupId>io.github.bonede</groupId>
