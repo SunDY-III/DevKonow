@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { getProjects, getProjectDetail } from '../api/index.js'
+import { getProjects } from '../api/index.js'
 
 /**
  * 全局项目上下文 Store。
