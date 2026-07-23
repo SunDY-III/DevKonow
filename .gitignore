@@ -1,6 +1,7 @@
 .vs/
 .slnx/
 target/
+backend/target/
 *.class
 *.jar
 *.war
