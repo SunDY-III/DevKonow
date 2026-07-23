@@ -140,7 +140,7 @@ public class GraphExpander {
                 return new ScoredChunk(
                         c.getId(), c.getDocId(), c.getSeq(),
                         "", c.getContent() != null ? c.getContent() : "",
-                        score, "graph");
+                        score, "graph", null);
             }
         } catch (Exception e) {
             log.warn("关联文档 chunk 拉取失败（docId={}）: {}", docId, e.getMessage());

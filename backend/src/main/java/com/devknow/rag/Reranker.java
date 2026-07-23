@@ -100,7 +100,7 @@ public class Reranker {
                     return new ScoredChunk(c.getChunkId(), c.getDocId(), c.getSeq(),
                             c.getFileName(), c.getContent(),
                             Math.round(finalScore * 10000.0) / 10000.0,
-                            c.getSource());
+                            c.getSource(), null);
                 })
                 .sorted(Comparator.comparingDouble(ScoredChunk::getScore).reversed())
                 .limit(topN)

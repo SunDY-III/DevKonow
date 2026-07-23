@@ -14,4 +14,8 @@ public class DocumentChunk {
     private Integer docVersion;
     private Integer seq;
     private String content;
+
+    /** Contextual Retrieval 上下文描述（LLM 生成，嵌入时使用） */
+    @Column(name = "context_description", length = 500)
+    private String contextDescription;
 }

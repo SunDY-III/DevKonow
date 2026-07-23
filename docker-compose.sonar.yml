@@ -1,0 +1,49 @@
+# SonarQube 独立启动文件
+# 使用方式：docker compose -f docker-compose.sonar.yml up -d
+# 启动后：http://localhost:9000（默认 admin/admin）
+# 运行分析：cd backend && mvn verify sonar:sonar
+#
+# 注意：SonarQube 需要至少 1GB 内存，建议在专用环境运行。
+
+version: "3.8"
+
+services:
+  sonarqube:
+    image: sonarqube:25.1-community
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    environment:
+      - SONAR_JDBC_URL=jdbc:postgresql://sonarqube-db:5432/sonar
+      - SONAR_JDBC_USERNAME=sonar
+      - SONAR_JDBC_PASSWORD=sonar
+      - SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true
+    volumes:
+      - sonarqube-data:/opt/sonarqube/data
+      - sonarqube-extensions:/opt/sonarqube/extensions
+    depends_on:
+      - sonarqube-db
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1"
+
+  sonarqube-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=sonar
+      - POSTGRES_PASSWORD=sonar
+      - POSTGRES_DB=sonar
+    volumes:
+      - sonarqube-db-data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+volumes:
+  sonarqube-data:
+  sonarqube-extensions:
+  sonarqube-db-data:

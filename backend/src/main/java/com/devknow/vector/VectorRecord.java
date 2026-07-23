@@ -18,4 +18,7 @@ public class VectorRecord {
     private String content;
     private float[] vector;
     private Integer level;       // 知识层级（文档级，用于 Qdrant filter 检索）
+
+    /** LLM 生成的上下文描述，用于 Contextual Retrieval 嵌入拼接 */
+    private String contextDescription;
 }

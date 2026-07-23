@@ -12,6 +12,9 @@ import com.devknow.knowledge.DocumentChunkRepository;
 import com.devknow.knowledge.graph.GraphExpander;
 import com.devknow.knowledge.graph.GraphRelationResult;
 import com.devknow.knowledge.graph.KnowledgeGraphService;
+import com.devknow.rag.router.DynamicRouteResult;
+import com.devknow.rag.router.DynamicRouter;
+import com.devknow.rag.sparse.SparseRetrievalService;
 import com.devknow.rag.strategy.ChunkStrategy;
 import com.devknow.rag.strategy.RagStrategyRouter;
 import com.devknow.vector.ScoredChunk;
@@ -57,6 +60,8 @@ public class RagService {
     private final RoleLevelMapper roleLevelMapper;
     private final UserRepository userRepository;
     private final RagStrategyRouter strategyRouter;
+    private final DynamicRouter dynamicRouter;
+    private final SparseRetrievalService sparseRetrievalService;
 
     @Value("${app.rag.vector-top-k}")  private int vectorTopK;
     @Value("${app.rag.keyword-top-k}") private int keywordTopK;
@@ -161,40 +166,73 @@ public class RagService {
     // ==================== 层级感知检索（策略驱动） ====================
 
     /**
-     * 层级感知检索，使用默认场景（"doc" 精准模式）。
+     * 层级感知检索 —— 使用动态路由预测最优参数。
+     *
+     * <p>与显式指定场景的重载不同，此方法先通过 {@link DynamicRouter} 分析
+     * query 特征（长度、关键词、层级、角色）预测最优 RAG 参数，
+     * 再执行完整的 9 步检索管道。预测失败时降级为 YAML 默认策略。
      */
     public RagResult levelAwareRetrieve(Long userId, String question) {
-        return levelAwareRetrieve(userId, null, question, "doc");
+        return levelAwareRetrieve(userId, null, question);
     }
 
     /**
-     * 层级感知检索，使用默认场景（"doc" 精准模式）。
+     * 层级感知检索 —— 使用动态路由预测最优参数。
+     *
+     * <p>动态路由使策略自适应查询特征，替代单一 "doc" 场景的固定配置。
      */
     public RagResult levelAwareRetrieve(Long userId, Long projectId, String question) {
-        return levelAwareRetrieve(userId, projectId, question, "doc");
+        if (question == null || question.isBlank()) {
+            return new RagResult(List.of(), 0);
+        }
+
+        // 获取层级分类 + 用户角色（路由特征）
+        UserKnowledgeRole userRole = getUserKnowledgeRole(userId);
+        LevelResult levelResult = levelClassifier.classify(question);
+
+        // 动态路由：预测最优参数
+        DynamicRouteResult dynamicRoute = dynamicRouter.route(question, levelResult, userRole);
+        log.info("动态路由: question={}, chunkSize={}, hyde={}, mmr={}, topK={}, rerankTopN={}, reasoning={}",
+                truncate(question, 50), dynamicRoute.getChunkSize(),
+                dynamicRoute.isHydeEnabled(), dynamicRoute.isMmrEnabled(),
+                dynamicRoute.getVectorTopK(), dynamicRoute.getRerankTopN(),
+                dynamicRoute.getReasoning());
+
+        return levelAwareRetrieve(userId, projectId, question, "default",
+                dynamicRoute);
     }
 
     /**
-     * 层级感知检索，按场景策略路由参数。
-     *
-     * <p>场景策略控制：
-     * <ul>
-     *   <li>HyDE 是否启用（学习场景关闭）</li>
-     *   <li>MMR 是否启用（代码场景关闭）</li>
-     *   <li>候选池大小（学习场景扩大 2 倍）</li>
-     *   <li>Cross-encoder 融合权重（学习场景 0.5，默认 0.7）</li>
-     *   <li>检查点跳过掩码（学习场景跳过 C1+C2）</li>
-     *   <li>向量 TopK / 关键词 TopK</li>
-     * </ul>
-     *
-     * @param userId    用户 ID
-     * @param projectId 项目 ID（可为 null）
-     * @param question  用户问题
-     * @param scenario  场景名称（learn / interview / safety / code / doc / default）
+     * 层级感知检索，使用指定场景（YAML 静态配置）。
      */
     public RagResult levelAwareRetrieve(Long userId, Long projectId, String question, String scenario) {
+        return levelAwareRetrieve(userId, projectId, question, scenario, null);
+    }
+
+    /**
+     * 层级感知检索，按场景策略路由参数（可选动态路由覆盖）。
+     *
+     * <p>策略优先级：动态路由 > YAML 场景配置 > 默认值。
+     * 动态路由的 {@link DynamicRouteResult} 非 null 时，其值覆盖场景配置。
+     *
+     * @param userId       用户 ID
+     * @param projectId    项目 ID（可为 null）
+     * @param question     用户问题
+     * @param scenario     场景名称（learn / interview / safety / code / doc / default）
+     * @param dynamicRoute 动态路由结果（可为 null，null 时纯用 YAML 配置）
+     */
+    public RagResult levelAwareRetrieve(Long userId, Long projectId, String question,
+                                         String scenario, DynamicRouteResult dynamicRoute) {
         long startNanos = System.nanoTime();
         ChunkStrategy strategy = strategyRouter.resolve(scenario);
+
+        // ===== 动态路由覆盖：如果 DynamicRouteResult 非 null，用其值覆盖 YAML 策略 =====
+        if (dynamicRoute != null) {
+            strategy = mergeDynamicRoute(strategy, dynamicRoute);
+            log.debug("动态路由已应用 scenario={}: chunkSize={}, hyde={}, mmr={}, topK={}, rerankTopN={}",
+                    scenario, strategy.getChunkSize(), strategy.isHydeEnabled(),
+                    strategy.isMmrEnabled(), strategy.getVectorTopK(), strategy.getRerankTopN());
+        }
 
         UserKnowledgeRole userRole = getUserKnowledgeRole(userId);
 
@@ -247,11 +285,15 @@ public class RagService {
         for (int l : searchLevels) levelList.add(l);
         List<DocumentChunk> kwRaw = chunkRepository.keywordSearchByLevel(expandedQuery, levelList, effectiveKeywordTopK);
         List<ScoredChunk> keywordHits = kwRaw.stream()
-                .map(c -> new ScoredChunk(c.getId(), c.getDocId(), c.getSeq(), "", c.getContent(), 0.0, "keyword"))
+                .map(c -> new ScoredChunk(c.getId(), c.getDocId(), c.getSeq(), "", c.getContent(), 0.0, "keyword", null))
                 .toList();
 
-        // ========== 步骤 5: RRF 融合 ==========
-        List<ScoredChunk> fused = RrfFusion.fuse(vectorHits, keywordHits, rrfK);
+        // ========== 步骤 4b: 稀疏检索（第三通道：LLM 加权词 × MySQL ngram） ==========
+        List<ScoredChunk> sparseHits = sparseRetrievalService.search(question, searchLevels);
+        log.debug("稀疏检索: {} hits", sparseHits.size());
+
+        // ========== 步骤 5: 三路 RRF 融合 ==========
+        List<ScoredChunk> fused = RrfFusion.fuse(rrfK, vectorHits, keywordHits, sparseHits);
 
         // ========== 步骤 6: MMR 多样性去重（可配置开关和候选池大小） ==========
         int candidatePoolSize = strategy.candidatePoolSize();
@@ -391,5 +433,93 @@ public class RagService {
             log.warn("获取用户角色失败（userId={}）: {}", userId, e.getMessage());
         }
         return UserKnowledgeRole.UNSPECIFIED;
+    }
+
+    // ==================== 分级检索：轻量探索路径（参考 K3 3:1 注意力混合） ====================
+
+    /**
+     * 轻量级探索检索 —— 用于 ReAct Agent 前几轮的工具调用。
+     *
+     * <p>与全量 {@link #levelAwareRetrieve} 的对比：
+     * <pre>
+     *                 轻量探索 (exploreRetrieve)    全量确认 (levelAwareRetrieve)
+     * HyDE             ❌                             ✅
+     * 向量 TopK        4                              8~12
+     * 关键词 TopK      4                              8
+     * 稀疏检索         ❌                             ✅
+     * Route B          ❌                             ✅
+     * RRF 融合         ✅ 两路                         ✅ 三路
+     * MMR 多样性       ❌                             ✅
+     * ReRank+CE        ❌                             ✅
+     * 图谱扩展         ❌                             ✅
+     * CRAG 评估        ❌                             ✅
+     * 幻觉 C1          ❌                             ✅（可配置）
+     * 返回条数         3                              4
+     * </pre>
+     *
+     * <p>参考 Kimi K3 的 3:1 注意力混合：大部分计算走轻量路径，关键步骤走全量。
+     * ReAct Agent 的前 2~3 次工具调用走此路径，最后一次 answer 走全量。
+     */
+    public RagResult exploreRetrieve(Long userId, Long projectId, String question) {
+        long start = System.nanoTime();
+
+        // 1. 层级分类（复用，成本低）
+        UserKnowledgeRole userRole = getUserKnowledgeRole(userId);
+        LevelResult levelResult = levelClassifier.classify(question);
+        RoleLevelMapper.AdjustedPlan plan = roleLevelMapper.adjust(userRole,
+                levelResult.getLevel(), levelResult.getConfidence());
+        int[] searchLevels = plan.getSearchLevels();
+
+        // 2. 向量搜索（轻量 TopK=4）
+        float[] queryVector = embed(userId, question);  // 无 HyDE
+        List<ScoredChunk> vectorHits = vectorStoreService.searchByLevels(
+                queryVector, 4, searchLevels);
+
+        // 3. 关键词搜索（轻量 TopK=4）
+        List<Integer> levelList = new ArrayList<>();
+        for (int l : searchLevels) levelList.add(l);
+        List<DocumentChunk> kwRaw = chunkRepository.keywordSearchByLevel(
+                question, levelList, 4);
+        List<ScoredChunk> keywordHits = kwRaw.stream()
+                .map(c -> new ScoredChunk(c.getId(), c.getDocId(), c.getSeq(), "", c.getContent(), 0.0, "keyword", null))
+                .toList();
+
+        // 4. 两路 RRF + Top 3
+        List<ScoredChunk> fused = RrfFusion.fuse(60, vectorHits, keywordHits);
+        List<ScoredChunk> top3 = fused.size() > 3 ? fused.subList(0, 3) : fused;
+
+        long elapsed = (System.nanoTime() - start) / 1_000_000;
+        log.info("探索检索: q={}, vector={}, keyword={}, fused={}, top3={}, 耗时={}ms",
+                truncate(question, 40), vectorHits.size(), keywordHits.size(),
+                fused.size(), top3.size(), elapsed);
+
+        return new RagResult(top3, top3.isEmpty() ? 0 : top3.get(0).getScore());
+    }
+
+    /** 截断长字符串用于日志 */
+    private static String truncate(String s, int maxLen) {
+        return s != null && s.length() > maxLen ? s.substring(0, maxLen) + "..." : (s != null ? s : "");
+    }
+
+    /**
+     * 合并静态策略与动态路由结果。
+     * 动态路由中的非默认值会覆盖静态策略中的对应参数。
+     */
+    private ChunkStrategy mergeDynamicRoute(ChunkStrategy base, DynamicRouteResult route) {
+        ChunkStrategy.ChunkStrategyBuilder builder = ChunkStrategy.builder()
+                .scenario(base.getScenario() + "+dynamic")
+                .chunkSize(route.getChunkSize() > 0 ? route.getChunkSize() : base.getChunkSize())
+                .chunkOverlap(base.getChunkOverlap())
+                .hydeEnabled(route.isHydeEnabled())
+                .mmrEnabled(route.isMmrEnabled())
+                .vectorTopK(route.getVectorTopK() > 0 ? route.getVectorTopK() : base.getVectorTopK())
+                .keywordTopK(route.getKeywordTopK() > 0 ? route.getKeywordTopK() : base.getKeywordTopK())
+                .rerankTopN(route.getRerankTopN() > 0 ? route.getRerankTopN() : base.getRerankTopN())
+                .crossEncoderWeight(route.getCrossEncoderWeight() > 0 ? route.getCrossEncoderWeight() : base.getCrossEncoderWeight())
+                .candidatePoolMultiplier(route.getCandidatePoolMultiplier() > 0 ? route.getCandidatePoolMultiplier() : base.getCandidatePoolMultiplier())
+                .skipCheckpoints(route.getSkipCheckpoints() != null && !route.getSkipCheckpoints().isEmpty()
+                        ? route.getSkipCheckpoints() : base.getSkipCheckpoints())
+                .minFinalChunks(base.getMinFinalChunks());
+        return builder.build();
     }
 }

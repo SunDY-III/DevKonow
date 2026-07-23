@@ -15,4 +15,7 @@ public class ScoredChunk {
     private double score;
     /** 来源标记：""=A路向量, "B"=B路补刀, "keyword"=关键词, "graph"=图谱扩展 */
     private String source;
+
+    /** LLM 生成的上下文描述（仅向量通道携带），用于重排序阶段或展示检索理由 */
+    private String contextDescription;
 }

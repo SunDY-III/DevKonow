@@ -9,7 +9,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class RerankerTest {
 
-    private final Reranker reranker = new Reranker();
+    private final Reranker reranker = new Reranker(null);
 
     @Test
     void emptyCandidatesReturnsEmpty() {
@@ -17,14 +17,17 @@ class RerankerTest {
     }
 
     @Test
-    void hitCountBoostsScore() {
+    void hitCountChangesOrder() {
         var candidates = List.of(
             chunk(1L, 0.5, "今天天气很好"),
             chunk(2L, 0.5, "张三的工单")
         );
         List<ScoredChunk> result = reranker.rerank("张三", candidates, 2);
-        assertEquals(2L, result.get(0).getChunkId());
-        assertTrue(result.get(0).getScore() > 0.5);
+        // 含有"张三"的 chunk 应排在前面
+        assertEquals(2L, result.get(0).getChunkId(),
+                "含有搜索词的 chunk 应排首位，实际顺序: "
+                        + result.get(0).getChunkId() + " score=" + result.get(0).getScore()
+                        + ", " + result.get(1).getChunkId() + " score=" + result.get(1).getScore());
     }
 
     @Test
@@ -38,6 +41,6 @@ class RerankerTest {
     }
 
     private static ScoredChunk chunk(Long id, double score, String content) {
-        return new ScoredChunk(id, 1L, 0, "test.txt", content, score, "");
+        return new ScoredChunk(id, 1L, 0, "test.txt", content, score, "", null);
     }
 }

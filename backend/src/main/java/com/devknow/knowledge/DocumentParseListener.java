@@ -38,6 +38,8 @@ public class DocumentParseListener {
     private final VectorStoreService vectorStoreService;
     private final EmbeddingModel embeddingModel;
     private final TextSplitter textSplitter;
+    private final SemanticStructureParser structureParser;
+    private final ContextualDescriptionGenerator descriptionGenerator;
     private final MinioClient minioClient;
     private final StringRedisTemplate redis;
     private final TokenAuditService tokenAuditService;
@@ -82,35 +84,44 @@ public class DocumentParseListener {
         }
         setProgress(doc.getId(), 20);
 
-        // 2. 语义切分（带 overlap）
-        List<String> chunks = textSplitter.split(text);
-        if (chunks.isEmpty()) throw new IllegalStateException("文档无有效文本");
-        setProgress(doc.getId(), 30);
+        // 2a. 语义结构解析（按标题/段落/代码块边界切分）
+        List<SemanticChunk> semanticChunks = structureParser.parse(text, doc.getFileName());
+        if (semanticChunks.isEmpty()) throw new IllegalStateException("文档无有效文本");
+
+        // 2b. Contextual Retrieval：为每个 Chunk 生成上下文描述
+        semanticChunks = descriptionGenerator.enrich(semanticChunks, doc.getFileName());
+        setProgress(doc.getId(), 35);
 
         // 3. 批量向量化入库
-        List<DocumentChunk> chunkEntities = new java.util.ArrayList<>(chunks.size());
-        List<VectorRecord> vectorRecords = new java.util.ArrayList<>(chunks.size());
-        for (int i = 0; i < chunks.size(); i++) {
-            String content = chunks.get(i);
+        //    嵌入时使用 "上下文描述 + 内容" 拼接，提升检索精度（Contextual Retrieval）
+        List<DocumentChunk> chunkEntities = new java.util.ArrayList<>(semanticChunks.size());
+        List<VectorRecord> vectorRecords = new java.util.ArrayList<>(semanticChunks.size());
+        for (SemanticChunk sc : semanticChunks) {
+            // 构建嵌入文本：description + content
+            String embeddingText = buildEmbeddingText(sc);
+            float[] vector = embeddingModel.embed(embeddingText).content().vector();
+            tokenAuditService.record(doc.getUserId(), "EMBEDDING", embeddingText.length() / 2, 0);
+
             DocumentChunk chunk = new DocumentChunk();
             chunk.setDocId(doc.getId());
             chunk.setDocVersion(doc.getVersion());
-            chunk.setSeq(i);
-            chunk.setContent(content);
+            chunk.setSeq(sc.getSeq());
+            chunk.setContent(sc.getContent());
+            chunk.setContextDescription(sc.getContextDescription());
             chunkEntities.add(chunk);
 
-            float[] vector = embeddingModel.embed(content).content().vector();
-            tokenAuditService.record(doc.getUserId(), "EMBEDDING", content.length() / 2, 0);
             // chunkId 暂用占位，saveAll 后从 entity 获取
             vectorRecords.add(new VectorRecord(
-                    doc.getId(), doc.getVersion(), null, i, doc.getFileName(), content, vector,
-                    doc.getLevel()));
+                    doc.getId(), doc.getVersion(), null, sc.getSeq(),
+                    doc.getFileName(), sc.getContent(), vector,
+                    doc.getLevel(), sc.getContextDescription()));
         }
+        setProgress(doc.getId(), 50);
 
-        // 批量写入 MySQL
+        // 4. 批量写入 MySQL
         chunkRepository.saveAll(chunkEntities);
 
-        // 批量写入 Qdrant（回填 chunkId）
+        // 5. 批量写入 Qdrant（回填 chunkId）
         for (int i = 0; i < vectorRecords.size(); i++) {
             vectorRecords.get(i).setChunkId(chunkEntities.get(i).getId());
         }
@@ -119,22 +130,35 @@ public class DocumentParseListener {
         setProgress(doc.getId(), 95);
 
         doc.setStatus("READY");
-        doc.setChunkCount(chunks.size());
+        doc.setChunkCount(semanticChunks.size());
         docRepository.save(doc);
 
-        // 同步到 Neo4j 知识图谱
+        // 6. 同步到 Neo4j 知识图谱
         try {
             int level = doc.getLevel() != null ? doc.getLevel() : 0;
             graphService.createOrUpdateNode(doc.getId(), doc.getFileName(), level, "");
-            // 取第一个 chunk 作为摘要，用于 LLM 自动建关系
-            String contentPreview = chunks.isEmpty() ? "" : chunks.get(0);
+            String contentPreview = semanticChunks.isEmpty() ? "" : semanticChunks.get(0).getContent();
             graphService.autoBuildRelations(doc.getId(), doc.getFileName(), contentPreview);
         } catch (Exception e) {
             log.warn("知识图谱同步失败（docId={}），不影响主流程: {}", doc.getId(), e.getMessage());
         }
 
         setProgress(doc.getId(), 100);
-        log.info("doc parsed: id={}, chunks={}, neo4j=synced", doc.getId(), chunks.size());
+        log.info("doc parsed: id={}, chunks={}, contextual={}, neo4j=synced",
+                doc.getId(), semanticChunks.size(),
+                semanticChunks.stream().filter(c -> c.getContextDescription() != null).count());
+    }
+
+    /**
+     * 构建用于嵌入的文本：如有上下文描述则拼接，否则只用原文。
+     * Contextual Retrieval 核心：描述提供 chunk 在文档中的角色信息，
+     * 使向量检索能感知语义上下文而不仅是字面匹配。
+     */
+    private String buildEmbeddingText(SemanticChunk sc) {
+        if (sc.getContextDescription() != null && !sc.getContextDescription().isBlank()) {
+            return sc.getContextDescription() + "\n\n" + sc.getContent();
+        }
+        return sc.getContent();
     }
 
     private void setProgress(Long docId, int progress) {

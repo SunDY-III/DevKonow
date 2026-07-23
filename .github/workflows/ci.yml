@@ -16,18 +16,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '21'
           distribution: 'temurin'
           cache: maven
 
       - name: Compile
         run: mvn compile -B
 
-      - name: Test
-        run: mvn test -B
+      - name: Test with Coverage
+        run: mvn verify -B
+        env:
+          # Testcontainers 在 CI 中使用 docker
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+
+      - name: Upload Coverage Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: backend/target/site/jacoco/index.html
+
+      - name: SonarQube Scan
+        if: github.ref == 'refs/heads/main'
+        run: mvn sonar:sonar -B -DskipTests -Dsonar.host.url=${{ secrets.SONAR_HOST_URL || 'http://localhost:9000' }} -Dsonar.login=${{ secrets.SONAR_TOKEN || 'admin' }} -Dsonar.password=${{ secrets.SONAR_PASSWORD || 'admin' }}
+        working-directory: backend
 
   frontend:
     runs-on: ubuntu-latest

@@ -1,5 +1,6 @@
 package com.devknow.governance;
 
+import com.devknow.config.MetricsConfig;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -22,6 +23,7 @@ import java.time.LocalDateTime;
 public class TokenAuditService {
 
     private final TokenUsageLogRepository repository;
+    private final MetricsConfig metricsConfig;
 
     /** 单用户每日 Token 预算上限（0=不限制） */
     @Value("${app.token-budget.daily-per-user:0}")
@@ -29,20 +31,27 @@ public class TokenAuditService {
 
     @Async
     public void record(Long userId, String scene, Integer inputTokens, Integer outputTokens) {
+        // Prometheus 指标
+        int in = inputTokens == null ? 0 : inputTokens;
+        int out = outputTokens == null ? 0 : outputTokens;
+        if (in > 0 || out > 0) {
+            metricsConfig.recordToken(scene, in, out);
+        }
+
         // 预算检查：超出上限则记录警告但不阻塞（仅提示，不中断业务流程）
         if (dailyBudgetPerUser > 0 && userId != null && userId > 0) {
             long todayUsage = repository.sumByUserSince(userId, LocalDate.now().atStartOfDay());
-            if (todayUsage + inputTokens + outputTokens > dailyBudgetPerUser) {
+            if (todayUsage + in + out > dailyBudgetPerUser) {
                 log.warn("Token 预算超限: userId={}, todayUsage={}, budget={}, new={}+{}",
-                        userId, todayUsage, dailyBudgetPerUser, inputTokens, outputTokens);
+                        userId, todayUsage, dailyBudgetPerUser, in, out);
             }
         }
         try {
             TokenUsageLog logRow = new TokenUsageLog();
             logRow.setUserId(userId == null ? 0L : userId);
             logRow.setScene(scene);
-            logRow.setInputTokens(inputTokens == null ? 0 : inputTokens);
-            logRow.setOutputTokens(outputTokens == null ? 0 : outputTokens);
+            logRow.setInputTokens(in);
+            logRow.setOutputTokens(out);
             repository.save(logRow);
         } catch (Exception e) {
             log.warn("token audit failed (non-blocking)", e);   // 审计失败不影响业务

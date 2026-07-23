@@ -4,3 +4,9 @@ node_modules/
 *.md
 .idea/
 *.iml
+src/test/
+.mvn/
+mvnw
+mvnw.cmd
+Dockerfile
+*.log

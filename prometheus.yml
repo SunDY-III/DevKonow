@@ -1,0 +1,18 @@
+# Prometheus 配置
+# 从 backend 容器抓取指标（http://backend:8080/actuator/prometheus）
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'devknow-backend'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['backend:8080']
+        labels:
+          application: 'devknow'
+          service: 'backend'
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

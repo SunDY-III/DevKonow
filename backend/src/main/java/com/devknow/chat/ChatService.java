@@ -1,5 +1,6 @@
 package com.devknow.chat;
 
+import com.devknow.agent.ReActAgent;
 import com.devknow.cache.SemanticCacheService;
 import com.devknow.codereview.CodeReviewAgentService;
 import com.devknow.governance.SensitiveWordFilter;
@@ -7,8 +8,8 @@ import com.devknow.rag.RagResult;
 import com.devknow.rag.RagService;
 import com.devknow.vector.ScoredChunk;
 import dev.langchain4j.model.chat.ChatLanguageModel;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -26,7 +27,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class ChatService {
 
     private final RagService ragService;
@@ -34,7 +34,24 @@ public class ChatService {
     private final CodeReviewAgentService codeReviewAgentService;
     private final SensitiveWordFilter sensitiveWordFilter;
     private final LlmStreamingService llmStreamingService;
-    private final ChatLanguageModel chatModel;
+    private final ChatLanguageModel fastModel;
+    private final ReActAgent reActAgent;
+
+    public ChatService(RagService ragService,
+                       SemanticCacheService semanticCacheService,
+                       CodeReviewAgentService codeReviewAgentService,
+                       SensitiveWordFilter sensitiveWordFilter,
+                       LlmStreamingService llmStreamingService,
+                       @Qualifier("fastChatLanguageModel") ChatLanguageModel fastModel,
+                       ReActAgent reActAgent) {
+        this.ragService = ragService;
+        this.semanticCacheService = semanticCacheService;
+        this.codeReviewAgentService = codeReviewAgentService;
+        this.sensitiveWordFilter = sensitiveWordFilter;
+        this.llmStreamingService = llmStreamingService;
+        this.fastModel = fastModel;
+        this.reActAgent = reActAgent;
+    }
 
     @Value("${app.rag.confidence-threshold}")
     private double confidenceThreshold;
@@ -52,8 +69,8 @@ public class ChatService {
     {
         routeStrategies.put("code", new CodeRouteStrategy());
         routeStrategies.put("doc", new DocRouteStrategy());
-        routeStrategies.put("both", new BothRouteStrategy());
-        // "unknown" 没有显式注册，走默认兜底
+        routeStrategies.put("both", new ReActRouteStrategy());
+        routeStrategies.put("unknown", new ReActRouteStrategy());
     }
 
     /** 策略接口 */
@@ -98,7 +115,7 @@ public class ChatService {
         }
 
         private String classifyCodeSubRoute(String question) {
-            String response = chatModel.generate("""
+            String response = fastModel.generate("""
                     你是一个代码问题二级分类器。判断用户关于代码的问题属于哪一类。
                     只返回一个词：method / callchain / implementation / logic
 
@@ -142,7 +159,7 @@ public class ChatService {
         }
 
         private String classifyDocSubRoute(String question) {
-            String response = chatModel.generate("""
+            String response = fastModel.generate("""
                     你是一个文档问题二级分类器。判断用户关于文档的问题属于哪一类。
                     只返回一个词：architecture / design / api / specification
 
@@ -161,44 +178,32 @@ public class ChatService {
         }
     }
 
-    // ==================== 二级策略：混合路由 ====================
+    // ==================== 三级策略：ReAct 迭代检索 ====================
 
-    private class BothRouteStrategy implements RouteStrategy {
+    /**
+     * ReAct (Reasoning + Acting) 路由 —— 适用于复杂/模糊问题。
+     *
+     * <p>与传统的"一次检索→生成"不同，ReAct 允许 LLM 在多轮推理中动态决定
+     * 需要什么信息，依次调用 search_code / search_doc / search_graph 等工具，
+     * 直到信息足够后才生成最终答案。
+     *
+     * <p>适用于：
+     * <ul>
+     *   <li>"both" — 既涉及代码又涉及文档的复杂问题</li>
+     *   <li>"unknown" — 路由分类器无法确定的问题</li>
+     * </ul>
+     */
+    private class ReActRouteStrategy implements RouteStrategy {
         @Override
         public void handle(Long userId, String conversationId, String question,
                            float[] queryVector, SseEmitter emitter, AtomicBoolean closed,
                            Long projectId, String context) {
             try {
-                send(emitter, closed, "phase", "both:merge");
-                List<ScoredChunk> codeResults = ragService.retrieveCode(userId, projectId, question);
-                RagResult docResults = ragService.levelAwareRetrieve(userId, projectId, question);
-
-                Set<Long> seenIds = new HashSet<>();
-                List<ScoredChunk> merged = new ArrayList<>();
-                if (codeResults != null) {
-                    for (ScoredChunk c : codeResults) {
-                        if (seenIds.add(c.getChunkId())) merged.add(c);
-                    }
-                }
-                if (docResults.getChunks() != null) {
-                    for (ScoredChunk c : docResults.getChunks()) {
-                        if (seenIds.add(c.getChunkId())) merged.add(c);
-                    }
-                }
-
-                if (merged.isEmpty()) {
-                    handleAgentRoute(userId, conversationId, question, emitter, closed);
-                    return;
-                }
-
-                double confidence = Math.max(
-                        codeResults.isEmpty() ? 0 : codeResults.get(0).getScore(),
-                        docResults.getConfidence());
-                RagResult combined = new RagResult(merged, confidence);
-                llmStreamingService.generateWithFallback(userId, conversationId, question, combined, emitter, closed, queryVector);
-
+                send(emitter, closed, "phase", "react:start");
+                log.info("ReAct 路由启动: q={}, projectId={}", question, projectId);
+                reActAgent.react(userId, conversationId, question, projectId, emitter, closed);
             } catch (Exception e) {
-                log.warn("both route failed", e);
+                log.error("ReAct 路由异常，降级为 Agent 兜底", e);
                 handleAgentRoute(userId, conversationId, question, emitter, closed);
             }
         }
@@ -265,7 +270,7 @@ public class ChatService {
     // ==================== 第一级分类 ====================
 
     private String classifyQuestion(String question) {
-        String response = chatModel.generate("""
+        String response = fastModel.generate("""
                 你是一个路由分类器。判断用户问题应该搜索哪个数据源。
                 只返回一个词：code / doc / both / unknown
 

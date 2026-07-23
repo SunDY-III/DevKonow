@@ -9,6 +9,7 @@ import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import java.util.*;
 import java.util.stream.Collectors;
+import org.springframework.beans.factory.annotation.Qualifier;
 
 /**
  * Cross-encoder 重排序器。
@@ -34,12 +35,12 @@ public class CrossEncoderReranker {
     /** 每批最多评分多少对 (query, chunk) */
     private static final int BATCH_SIZE = 10;
 
-    private final dev.langchain4j.model.chat.ChatLanguageModel chatModel;
+    private final dev.langchain4j.model.chat.ChatLanguageModel fastModel;
 
     public CrossEncoderReranker(
             @Value("${app.rag.cross-encoder.model:}") String modelName,
-            dev.langchain4j.model.chat.ChatLanguageModel chatModel) {
-        this.chatModel = chatModel;
+            @Qualifier("fastChatLanguageModel") dev.langchain4j.model.chat.ChatLanguageModel fastModel) {
+        this.fastModel = fastModel;
     }
 
     /**
@@ -120,7 +121,8 @@ public class CrossEncoderReranker {
                             batch.get(i).getFileName(),
                             batch.get(i).getContent(),
                             Math.round(fused * 10000.0) / 10000.0,
-                            batch.get(i).getSource()));
+                            batch.get(i).getSource(),
+                            null));
                 }
             } catch (Exception e) {
                 log.warn("batch scoring 失败 ({}~{}), 保留原始分", batchStart, batchEnd);
@@ -162,7 +164,7 @@ public class CrossEncoderReranker {
 
         String response;
         try {
-            response = chatModel.chat(
+            response = fastModel.chat(
                     ChatRequest.builder()
                         .messages(List.of(UserMessage.from(sb.toString())))
                         .build())

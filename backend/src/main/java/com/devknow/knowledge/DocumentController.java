@@ -18,13 +18,17 @@ public class DocumentController {
     private final DocumentService documentService;
 
     @PostMapping("/upload")
-    public ApiResponse<KnowledgeDocument> upload(@RequestParam("file") MultipartFile file) {
-        return ApiResponse.ok(documentService.upload(UserContext.require(), file));
+    public ApiResponse<DocumentDTO> upload(@RequestParam("file") MultipartFile file,
+                                            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey) {
+        KnowledgeDocument doc = documentService.upload(UserContext.require(), file);
+        return ApiResponse.ok(DocumentDTO.from(doc));
     }
 
     @GetMapping("/list")
-    public ApiResponse<Page<KnowledgeDocument>> list(Pageable pageable) {
-        return ApiResponse.ok(documentService.listMine(UserContext.require(), pageable));
+    public ApiResponse<Page<DocumentDTO>> list(Pageable pageable) {
+        Page<KnowledgeDocument> docs = documentService.listMine(UserContext.require(), pageable);
+        Page<DocumentDTO> dtoPage = docs.map(DocumentDTO::from);
+        return ApiResponse.ok(dtoPage);
     }
 
     @GetMapping("/{id}/progress")

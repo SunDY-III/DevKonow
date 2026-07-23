@@ -99,7 +99,7 @@ public class StrictVerifier {
 
         List<ScoredChunk> passed = verified.stream()
                 .map(v -> new ScoredChunk(v.chunk.getChunkId(), v.chunk.getDocId(), v.chunk.getSeq(),
-                        v.chunk.getFileName(), v.chunk.getContent(), v.score, v.chunk.getSource()))
+                        v.chunk.getFileName(), v.chunk.getContent(), v.score, v.chunk.getSource(), null))
                 .toList();
 
         log.info("StrictVerifier: 输入={}, 通过={}, 置信度={:.2f}, 耗时={}ms",

@@ -6,6 +6,7 @@ import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.input.PromptTemplate;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Qualifier;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -19,11 +20,16 @@ import java.util.Map;
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class LevelClassifier {
 
-    private final ChatLanguageModel chatModel;
+    private final ChatLanguageModel fastModel;
     private final ObjectMapper objectMapper;
+
+    public LevelClassifier(@Qualifier("fastChatLanguageModel") ChatLanguageModel fastModel,
+                           ObjectMapper objectMapper) {
+        this.fastModel = fastModel;
+        this.objectMapper = objectMapper;
+    }
 
     private static final String PROMPT_TEMPLATE = """
             你是一个知识库分类器。请判断以下问题属于哪个知识层级，只返回 JSON。
@@ -76,7 +82,7 @@ public class LevelClassifier {
             ChatRequest request = ChatRequest.builder()
                     .messages(UserMessage.from(prompt))
                     .build();
-            String response = chatModel.chat(request).aiMessage().text();
+            String response = fastModel.chat(request).aiMessage().text();
 
             // 解析 JSON 响应
             LevelResult result = parseResponse(response);

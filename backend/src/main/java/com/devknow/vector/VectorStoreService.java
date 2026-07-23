@@ -188,19 +188,26 @@ public class VectorStoreService {
         Long chunkId = record.getChunkId() != null ? record.getChunkId() : 0L;
         Long docId = record.getDocId() != null ? record.getDocId() : 0L;
 
+        var payloadBuilder = new java.util.HashMap<String, io.qdrant.client.grpc.JsonWithInt.Value>();
+        payloadBuilder.put("project_id", value(docId));
+        payloadBuilder.put("source", value("doc"));
+        payloadBuilder.put("doc_id", value(docId));
+        payloadBuilder.put("chunk_id", value(chunkId));
+        payloadBuilder.put("seq", value(record.getSeq() != null ? record.getSeq() : 0));
+        payloadBuilder.put("file_name", value(record.getFileName() != null ? record.getFileName() : ""));
+        payloadBuilder.put("content", value(record.getContent() != null ? record.getContent() : ""));
+        payloadBuilder.put("level", value(record.getLevel() != null ? record.getLevel() : 0));
+
+        // Contextual Retrieval：存储上下文描述
+        String ctxDesc = record.getContextDescription();
+        if (ctxDesc != null && !ctxDesc.isBlank()) {
+            payloadBuilder.put("context_description", value(ctxDesc));
+        }
+
         return PointStruct.newBuilder()
                 .setId(id(chunkId))
                 .setVectors(vectors(vec))
-                .putAllPayload(Map.of(
-                        "project_id", value(docId),
-                        "source", value("doc"),
-                        "doc_id", value(docId),
-                        "chunk_id", value(chunkId),
-                        "seq", value(record.getSeq() != null ? record.getSeq() : 0),
-                        "file_name", value(record.getFileName() != null ? record.getFileName() : ""),
-                        "content", value(record.getContent() != null ? record.getContent() : ""),
-                        "level", value(record.getLevel() != null ? record.getLevel() : 0)
-                ))
+                .putAllPayload(payloadBuilder)
                 .build();
     }
 
@@ -218,9 +225,12 @@ public class VectorStoreService {
 
         if (content.isEmpty() && chunkId == 0L) return null;
 
+        // Contextual Retrieval：读取上下文描述
+        String contextDescription = extractString(payload, "context_description");
+
         return new ScoredChunk(
                 chunkId, docId, seq,
-                fileName, content, score, "");
+                fileName, content, score, "", contextDescription);
     }
 
     private long extractLong(Map<String, JsonWithInt.Value> payload, String key) {

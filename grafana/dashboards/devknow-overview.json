@@ -1,0 +1,94 @@
+{
+  "title": "DevKnow 全局看板",
+  "version": 1,
+  "panels": [
+    {
+      "title": "请求量 (QPS)",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 0, "w": 8, "h": 8},
+      "targets": [
+        {
+          "expr": "rate(http_server_requests_seconds_count{application=\"devknow\"}[5m])",
+          "legendFormat": "{{uri}}"
+        }
+      ]
+    },
+    {
+      "title": "P95/P99 延迟 (ms)",
+      "type": "timeseries",
+      "gridPos": {"x": 8, "y": 0, "w": 8, "h": 8},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(http_server_requests_seconds_bucket{application=\"devknow\"}[5m])) * 1000",
+          "legendFormat": "P95 {{uri}}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(http_server_requests_seconds_bucket{application=\"devknow\"}[5m])) * 1000",
+          "legendFormat": "P99 {{uri}}"
+        }
+      ]
+    },
+    {
+      "title": "JVM 堆内存",
+      "type": "timeseries",
+      "gridPos": {"x": 16, "y": 0, "w": 8, "h": 8},
+      "targets": [
+        {
+          "expr": "jvm_memory_used_bytes{area=\"heap\", application=\"devknow\"} / 1024 / 1024",
+          "legendFormat": "heap MB"
+        },
+        {
+          "expr": "jvm_memory_max_bytes{area=\"heap\", application=\"devknow\"} / 1024 / 1024",
+          "legendFormat": "heap max MB"
+        }
+      ]
+    },
+    {
+      "title": "Token 消耗趋势",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "rate(devknow_token_total{application=\"devknow\"}[5m])",
+          "legendFormat": "{{type}}"
+        }
+      ]
+    },
+    {
+      "title": "语义缓存命中率",
+      "type": "stat",
+      "gridPos": {"x": 12, "y": 8, "w": 6, "h": 8},
+      "targets": [
+        {
+          "expr": "rate(devknow_cache_hits_total{application=\"devknow\"}[5m]) / (rate(devknow_cache_hits_total{application=\"devknow\"}[5m]) + rate(devknow_cache_misses_total{application=\"devknow\"}[5m])) * 100"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        }
+      }
+    },
+    {
+      "title": "数据库连接池",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "hikaricp_connections_active{application=\"devknow\"}", "legendFormat": "活跃"},
+        {"expr": "hikaricp_connections_idle{application=\"devknow\"}", "legendFormat": "空闲"},
+        {"expr": "hikaricp_connections_pending{application=\"devknow\"}", "legendFormat": "等待"},
+        {"expr": "hikaricp_connections_max{application=\"devknow\"}", "legendFormat": "上限"}
+      ]
+    },
+    {
+      "title": "连接超时",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 16, "w": 6, "h": 8},
+      "targets": [
+        {"expr": "rate(hikaricp_connections_timeout_total{application=\"devknow\"}[5m])", "legendFormat": "超时/5m"}
+      ]
+    }
+  ]
+}

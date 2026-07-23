@@ -1,0 +1,26 @@
+[
+  {
+    "id": "q001",
+    "question": "OrderService 的 createOrder 方法是怎么实现的？",
+    "expectedDocIds": [1],
+    "expectedChunkIds": [],
+    "expectedScenario": "code",
+    "expectedLevel": 4
+  },
+  {
+    "id": "q002",
+    "question": "整个系统的技术选型原则是什么",
+    "expectedDocIds": [2],
+    "expectedChunkIds": [],
+    "expectedScenario": "doc",
+    "expectedLevel": 1
+  },
+  {
+    "id": "q003",
+    "question": "API 接口的命名规范是什么",
+    "expectedDocIds": [3],
+    "expectedChunkIds": [],
+    "expectedScenario": "doc",
+    "expectedLevel": 3
+  }
+]

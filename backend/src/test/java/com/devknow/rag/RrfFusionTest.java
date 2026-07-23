@@ -61,6 +61,6 @@ class RrfFusionTest {
     }
 
     private static ScoredChunk chunk(Long id, double score) {
-        return new ScoredChunk(id, 1L, 0, "test.txt", "content " + id, score, "");
+        return new ScoredChunk(id, 1L, 0, "test.txt", "content " + id, score, "", null);
     }
 }
